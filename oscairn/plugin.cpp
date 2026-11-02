@@ -217,9 +217,11 @@ namespace
         std::array<std::atomic<double>, paramCount> values{}; // get_value: channel 1's sound
         std::array<uint8_t, 16> expression{}, wheel{}, sustainPedal{};
         std::array<bool, voiceCapacity> keyDown{}; // per voice index: its key is down in an engine
-        std::array<uint16_t, voiceCapacity> keyOf{}; // slot << 11 | channel << 7 | key
         bool wantCallback = false;
         bool active = false; // main thread
+        uint64_t finished = 0; // voices ended (voicesFinished, for the tests)
+        std::array<bool, contextCapacity> pinnedBeforeLoad{}; // tails ringing when a snapshot load began
+        bool loaded = false;
         std::atomic<Values*> presetIn{nullptr}, presetDone{nullptr}; // a loaded preset, main → audio → main
 
         Organ()
@@ -283,9 +285,7 @@ namespace
                 if(s.engine) sbf_panic(s.engine);
                 if(s.fading) { if(retired.space()) retired.push(s.fading); else sbf_panic(s.fading); s.fading = nullptr; }
                 s.cur.pos = s.old.pos = F; s.quiet = 0; s.exprGain = 1.0;
-                for(auto& ch : s.keys) ch.fill(0);
             }
-            keyDown.fill(false);
         }
 
         void wake(uint32_t slot)
@@ -359,13 +359,19 @@ namespace
         {
             const auto slot = slotOf(c);
             const auto vi = uint32_t(&v - voices.data());
-            if(keyDown[vi]) { const auto k = keyOf[vi]; keyChange(k >> 11, (k >> 7) & 15, k & 127, false); }
             wake(slot);
             auto& s = slots[slot];
             if(s.engine && s.swell != expression[v.channel])
             { s.swell = expression[v.channel]; sbf_control(s.engine, swellId, s.swell); }
             keyChange(slot, v.channel, v.key, true);
-            keyDown[vi] = true; keyOf[vi] = uint16_t(slot << 11 | v.channel << 7 | v.key);
+            keyDown[vi] = true;
+        }
+        // Every way a voice ends (released out, choked, stolen, reset): its key goes up.
+        void voiceFinished(Voice& v)
+        {
+            ++finished;
+            const auto vi = uint32_t(&v - voices.data());
+            if(keyDown[vi]) { keyDown[vi] = false; keyChange(v.context, v.channel, v.key, false); }
         }
         void release(Voice& v)
         {
@@ -515,16 +521,10 @@ namespace
                 }
                 if(s.quiet >= quietFragments) endTail(i);
             }
-            // Keys whose release has rendered end; keys of voices ended elsewhere (a steal) are let go.
-            for(uint32_t vi = 0; vi < voiceCapacity; ++vi)
+            // Keys whose release has rendered end.
+            for(auto& v : voices)
             {
-                auto& v = voices[vi];
-                if(!v.active)
-                {
-                    if(keyDown[vi]) { keyDown[vi] = false; const auto k = keyOf[vi]; keyChange(k >> 11, (k >> 7) & 15, k & 127, false); }
-                    continue;
-                }
-                if(!v.released) continue;
+                if(!v.active || !v.released) continue;
                 if(v.releaseLeft > n) { v.releaseLeft -= n; continue; }
                 const auto at = eventTime;
                 eventTime = from + (v.releaseLeft ? v.releaseLeft - 1 : 0);
@@ -626,10 +626,21 @@ namespace
             fields >> std::ws;
             return i == paramCount && fields.eof();
         }
+        // A snapshot load zeroes every context's pins, the ringing tails' among them: forget those.
+        // A refused state changes nothing, so then they are taken back (restored() is not called).
+        void snapshotLoading(bool begins)
+        {
+            if(begins)
+            {
+                loaded = false;
+                for(uint32_t i = 0; i < contextCapacity; ++i) { pinnedBeforeLoad[i] = slots[i].ringing; slots[i].ringing = false; }
+            }
+            else if(!loaded)
+                for(uint32_t i = 0; i < contextCapacity; ++i) slots[i].ringing = pinnedBeforeLoad[i];
+        }
         void restored()
         {
-            // loadSnapshot zeroed every context's pins, the tails' among them.
-            for(auto& s : slots) s.ringing = false;
+            loaded = true;
             rebuildAll();
             for(uint32_t i = 0; i < paramCount; ++i) values[i] = contexts[selected[0]].patch.values[i];
         }
@@ -833,6 +844,8 @@ const clap_plugin_descriptor_t descriptor = {
     "A tonewheel organ and Leslie: setBfree by Fredrik Kilander, Will Panther, Robin Gareus and Ken Restivo",
     features,
 };
+
+uint64_t voicesFinished(const clap_plugin_t* p) { return self(p).finished; }
 
 const clap_plugin_t* create(const clap_host_t* host)
 {

@@ -24,4 +24,5 @@ namespace organ
     extern const clap_plugin_descriptor_t descriptor;
     const clap_plugin_t* create(const clap_host_t* host);
     const void* factory(const char* id); // clap_plugin_entry.get_factory
+    uint64_t voicesFinished(const clap_plugin_t* p); // the sound-context helper's voiceFinished calls so far
 }

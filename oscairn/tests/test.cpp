@@ -256,6 +256,20 @@ namespace
         CHECK(!b.load(saved.substr(0, saved.size() / 2)));
         CHECK(b.save() == current);
         std::printf("  state is %zu bytes\n", saved.size());
+
+        // A refused state over a ringing tail: the tail rings on, and its pin ends with it.
+        Instance c(48000);
+        auto* cc = c.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        const auto other = cc->prepare(c.p, "other", nullptr, 0, nullptr, nullptr, nullptr, 0);
+        CHECK(cc->select(c.p, other, 0));
+        c.at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 1).at(4800).note(CLAP_EVENT_NOTE_OFF, 0, 60, 1);
+        c.render(9600, 480);
+        CHECK(cc->select(c.p, 0, 0));
+        CHECK(!c.load(bad));
+        const auto tail = c.render(4800, 480).left;
+        CHECK(rms(tail, 0, tail.size()) > 1e-4);
+        c.render(48000 * 5, 512);
+        CHECK(cc->discard(c.p, other));
     }
 
     int noteEnds(const std::vector<std::vector<uint8_t>>& events, int32_t id = -2)
@@ -358,6 +372,62 @@ namespace
             std::printf("  %.0f Hz: choked with another key held, fades over %.2f ms, silent %.2f ms after the choke\n", rate, fade, total);
             CHECK(end > onset && fade >= 2 && fade <= 5 && total <= 6);
         }
+    }
+
+    // Magnitude of x[from, to) at a frequency (Hann window).
+    double magnitude(const std::vector<float>& x, size_t from, size_t to, double hz, double rate)
+    {
+        double re = 0, im = 0;
+        const double n = double(to - from);
+        for(size_t i = from; i < to; ++i)
+        {
+            const double w = 0.5 - 0.5 * std::cos(2 * M_PI * double(i - from) / n), a = 2 * M_PI * hz * double(i) / rate;
+            re += w * x[i] * std::cos(a); im += w * x[i] * std::sin(a);
+        }
+        return std::sqrt(re * re + im * im) / n;
+    }
+
+    // The sound-context helper's voiceFinished hook fires whenever a voice ends, and its key
+    // goes up: released out, choked, stolen, reset.
+    void voices()
+    {
+        Instance o(48000);
+        o.at(0).param(param("Leslie"), 0).param(param("Reverb"), 0);
+        o.render(256, 256);
+        o.service();
+        auto finished = [&] { return organ::voicesFinished(o.p); };
+        // Released.
+        auto before = finished();
+        o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 1).at(960).note(CLAP_EVENT_NOTE_OFF, 0, 60, 1);
+        auto r = o.render(4800, 480);
+        CHECK(finished() == before + 1 && noteEnds(r.events, 1) == 1);
+        // Choked, another key of the sound held (silent lower D#3): the key goes up.
+        before = finished();
+        o.at(0).note(CLAP_EVENT_NOTE_ON, 1, 51, 2).note(CLAP_EVENT_NOTE_ON, 0, 69, 3).at(9600).note(CLAP_EVENT_NOTE_CHOKE, 0, 69, 3);
+        r = o.render(19200, 480);
+        CHECK(finished() == before + 1 && noteEnds(r.events, 3) == 1);
+        CHECK(rms(r.left, 14400, 19200) < 1e-4);
+        o.at(0).note(CLAP_EVENT_NOTE_OFF, 1, 51, 2);
+        o.render(4800, 480);
+        // Stolen: 192 voices, the oldest on C4 alone, then one more; C4 stops sounding.
+        before = finished();
+        o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 10);
+        for(int i = 0; i < 191; ++i) o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 64, 100 + i);
+        r = o.render(9600, 480);
+        CHECK(finished() == before);
+        o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 67, 400);
+        const auto after = o.render(9600, 480);
+        CHECK(finished() == before + 1 && noteEnds(after.events, 10) == 1);
+        const double c4 = magnitude(r.left, 4800, 9600, 261.63, 48000), gone = magnitude(after.left, 4800, 9600, 261.63, 48000);
+        std::printf("  stolen C4: %.5f before, %.5f after\n", c4, gone);
+        CHECK(gone < 0.05 * c4);
+        // Reset: every voice ends, and a key played again sounds.
+        before = finished();
+        o.p->reset(o.p);
+        CHECK(finished() == before + 192);
+        o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 64, 500);
+        r = o.render(9600, 480);
+        CHECK(rms(r.left, 4800, 9600) > 0.01);
     }
 
     // Native sound contexts: a held key keeps its sound, eight sounds, discard rules, snapshots.
@@ -949,6 +1019,7 @@ namespace
         {"startup", startup},
         {"rates", rates},
         {"click", clickRates},
+        {"voices", voices},
         {"quiet", quiet},
         {"threads", threads},
         {"metadata", metadata}, {"determinism", determinism}, {"realtime", realtime}, {"state", state},
