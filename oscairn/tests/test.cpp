@@ -888,6 +888,49 @@ namespace
         CHECK(largestStep(overlapped, 0) < 1.2 * largestStep(steady, 9600));
     }
 
+    // Transposes reach ±127 semitones: C4 played 60 semitones away sounds as C4; at the extremes
+    // every key falls off the manuals and is silent (and the engine stays in its tables).
+    void transpose()
+    {
+        auto play = [](std::initializer_list<std::pair<const char*, double>> settings, int16_t channel, int16_t key) {
+            Instance o(48000);
+            plain(o);
+            for(auto [name, v] : settings) o.at(0).param(param(name), v);
+            o.render(256, 256);
+            o.service();
+            o.render(256, 256);
+            o.at(0).note(CLAP_EVENT_NOTE_ON, channel, key, 1);
+            return o.render(24000, 512).left;
+        };
+        const auto c4 = play({}, 0, 60);
+        const double f = frequency(c4, 12000, 24000, 48000);
+        for(auto [shift, key] : {std::pair{60.0, int16_t(0)}, {-60.0, int16_t(120)}})
+        {
+            const auto x = play({{"Transpose", shift}}, 0, key);
+            CHECK(std::fabs(1200 * std::log2(frequency(x, 12000, 24000, 48000) / f)) < 1);
+        }
+        for(double shift : {127.0, -127.0})
+            for(int16_t key : {0, 60, 127})
+            {
+                CHECK(rms(play({{"Transpose", shift}}, 0, key), 0, 24000) < 1e-6);
+                // Splits with their own transposes adding up to ±254.
+                const auto settings = {std::pair{"Transpose", shift}, {"Pedal split", 48.0}, {"Lower split", 72.0},
+                                       {"Pedal split transpose", shift}, {"Lower split transpose", shift}, {"Upper split transpose", shift}};
+                CHECK(rms(play(settings, 0, key), 0, 24000) < 1e-6);
+                CHECK(rms(play(settings, 1, key), 0, 24000) < 1e-6);
+                CHECK(rms(play(settings, 2, key), 0, 24000) < 1e-6);
+            }
+        double v;
+        auto* p = organ::create(&host.host);
+        p->init(p);
+        auto* params = static_cast<const clap_plugin_params_t*>(p->get_extension(p, CLAP_EXT_PARAMS));
+        CHECK(params->text_to_value(p, param("Transpose"), "-127 semitones", &v) && v == -127);
+        clap_param_info_t info;
+        params->get_info(p, param("Upper split transpose") - 1, &info);
+        CHECK(info.min_value == -127 && info.max_value == 127 && info.default_value == 0);
+        p->destroy(p);
+    }
+
     // Every sample rate sounds the same: pitch, vibrato, percussion decay, Leslie speed.
     void rates()
     {
@@ -1020,6 +1063,7 @@ namespace
         {"rates", rates},
         {"click", clickRates},
         {"voices", voices},
+        {"transpose", transpose},
         {"quiet", quiet},
         {"threads", threads},
         {"metadata", metadata}, {"determinism", determinism}, {"realtime", realtime}, {"state", state},

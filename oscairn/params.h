@@ -149,12 +149,12 @@ namespace organ
 
         {"Volume", "Output", -40, 12, 0, false, Kind::Plugin, Map::Level, nullptr, Text::Plain, "dB", nullptr, nullptr, W_KNOB, 40, 0, OSCAIRN_ROLE_LEVEL},
         {"Sustain pedal", "Keyboard", 0, 1, 0, true, Kind::Plugin, Map::Sustain, nullptr, Text::List, "", sustainModes, nullptr, W_BUTTONS, 0, 0, 0},
-        CFG_INT("Transpose", "Keyboard", -48, 48, 0, "midi.transpose", "semitones"),
+        CFG_INT("Transpose", "Keyboard", -127, 127, 0, "midi.transpose", "semitones"),
         {"Pedal split", "Keyboard", 0, 127, 0, true, Kind::Config, Map::Split, nullptr, Text::Key, "", nullptr, nullptr, W_AUTO, 0, 0, 0},
         {"Lower split", "Keyboard", 0, 127, 0, true, Kind::Config, Map::Split, nullptr, Text::Key, "", nullptr, nullptr, W_AUTO, 0, 0, 0},
-        CFG_INT("Pedal split transpose", "Keyboard", -48, 48, 0, "midi.pedals.transpose.split", "semitones"),
-        CFG_INT("Lower split transpose", "Keyboard", -48, 48, 0, "midi.lower.transpose.split", "semitones"),
-        CFG_INT("Upper split transpose", "Keyboard", -48, 48, 0, "midi.upper.transpose.split", "semitones"),
+        CFG_INT("Pedal split transpose", "Keyboard", -127, 127, 0, "midi.pedals.transpose.split", "semitones"),
+        CFG_INT("Lower split transpose", "Keyboard", -127, 127, 0, "midi.lower.transpose.split", "semitones"),
+        CFG_INT("Upper split transpose", "Keyboard", -127, 127, 0, "midi.upper.transpose.split", "semitones"),
 
         CFG_NUM("Tuning", "Tonewheels", 220, 880, 440, "osc.tuning", Text::Plain, "Hz"),
         CFG_LIST("Temperament", "Tonewheels", 2, 1, "osc.temperament", temperaments, temperamentConfigs, W_BUTTONS),

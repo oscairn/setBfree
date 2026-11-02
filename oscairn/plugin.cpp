@@ -145,7 +145,7 @@ namespace
         set("Overdrive", g.overdrive); set("Leslie speed", g.leslie);
         if(g.reverb >= 0) v[index("Reverb")] = std::round(std::clamp(g.reverb, 0.0, 1.0) * 127) / 127; // its 7-bit steps
         set("Pedal split", g.pedalSplit); set("Lower split", g.lowerSplit);
-        auto shift = [&](const char* name, int value) { if(value != -1) v[index(name)] = std::clamp(value, -48, 48); };
+        auto shift = [&](const char* name, int value) { if(value != -1) v[index(name)] = std::clamp(value, -127, 127); };
         shift("Transpose", g.transpose); shift("Pedal split transpose", g.pedalTranspose);
         shift("Lower split transpose", g.lowerTranspose); shift("Upper split transpose", g.upperTranspose);
         return v;
