@@ -80,6 +80,24 @@ int sbf_keys_down (const sbf_engine* e);
 /* Frames a key's attack or release takes, in whole fragments, from the fragment it starts in. */
 int sbf_release_frames (const sbf_engine* e);
 
+/* The Leslie alone (b_whirl), for the effect plugin. Creating and destroying allocate;
+ * everything else is real-time safe. */
+typedef struct sbf_rotor sbf_rotor;
+
+/* config: "whirl.*=value" lines, read before the rotor initialises, or NULL. */
+sbf_rotor* sbf_rotor_create (double rate, const char* config);
+void       sbf_rotor_destroy (sbf_rotor* r);
+/* 0 stop, 1 slow, 2 fast (both rotors, as rotary.speed-preset) */
+void sbf_rotor_speed (sbf_rotor* r, int speed);
+/* Takes over the rotors' angles and speeds of another rotor at the same rate. */
+void sbf_rotor_follow (sbf_rotor* r, const sbf_rotor* from);
+/* Empties the delay lines and filters. */
+void sbf_rotor_clear (sbf_rotor* r);
+/* Mono in, stereo out; any n. */
+void sbf_rotor_process (sbf_rotor* r, const float* in, float* left, float* right, uint32_t n);
+/* The horn's current speed in revolutions per minute. */
+double sbf_rotor_horn_rpm (const sbf_rotor* r);
+
 #ifdef __cplusplus
 }
 #endif

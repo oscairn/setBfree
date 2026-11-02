@@ -12,7 +12,9 @@ ctest --test-dir build --output-on-failure
 oscairn/tools/compare-stock.sh build/gate   # the stock-vs-fork gate
 ```
 
-`build/setbfree.clap` is the plugin: "setBfree", `org.oscairn.setbfree`.
+`build/setbfree.clap` holds two plugins: "setBfree" (`org.oscairn.setbfree`), the organ, and
+"setBfree Leslie" (`org.oscairn.setbfree.leslie`), its rotary speaker as an audio effect with
+Oscairn's native effect contexts.
 
 ## Credits and licence
 

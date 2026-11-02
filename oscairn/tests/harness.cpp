@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -67,15 +68,52 @@ namespace organtest
 
     Host host{{CLAP_VERSION_INIT, nullptr, "organ test", "", "", "1", hostExtension, hostRequest, hostRequest, hostCallback}};
 
+    double rms(const std::vector<float>& x, size_t from, size_t to)
+    {
+        double s = 0;
+        for(size_t i = from; i < to; ++i) s += double(x[i]) * x[i];
+        return std::sqrt(s / double(to - from));
+    }
+    double frequency(const std::vector<float>& x, size_t from, size_t to, double rate)
+    {
+        double first = -1, last = -1;
+        int n = 0;
+        for(size_t i = from + 1; i < to; ++i)
+            if(x[i - 1] < 0 && x[i] >= 0)
+            {
+                const double t = double(i - 1) + x[i - 1] / (x[i - 1] - x[i]);
+                if(first < 0) first = t; else ++n;
+                last = t;
+            }
+        return n > 0 ? n * rate / (last - first) : 0;
+    }
+    double rotorRate(const std::vector<float>& x, size_t from, double rate)
+    {
+        std::vector<double> e;
+        const size_t w = size_t(rate / 200);
+        for(size_t i = from; i + 2 * w <= x.size(); i += w) e.push_back(frequency(x, i, i + 2 * w, rate));
+        double mean = 0;
+        for(double v : e) mean += v / double(e.size());
+        for(auto& v : e) v -= mean;
+        double best = 0, power = 0;
+        for(double f = 2; f <= 12; f += 0.01)
+        {
+            double re = 0, im = 0;
+            for(size_t k = 0; k < e.size(); ++k) { re += e[k] * std::cos(2 * M_PI * f * k / 200); im += e[k] * std::sin(2 * M_PI * f * k / 200); }
+            if(re * re + im * im > power) { power = re * re + im * im; best = f; }
+        }
+        return best;
+    }
+
     void resetAllocations() { allocated = 0; freed = 0; }
     void trackBytes(bool on) { if(on) tracked = 0; tracking = on; }
     int64_t trackedBytes() { return tracked; }
     int allocations() { return allocated; }
     int frees() { return freed; }
 
-    Instance::Instance(double r, bool activate) : rate(r)
+    Instance::Instance(double r, bool activate, const clap_plugin_t* (*make)(const clap_host_t*)) : rate(r)
     {
-        p = organ::create(&host.host);
+        p = make(&host.host);
         p->init(p);
         if(activate)
         {
@@ -148,9 +186,16 @@ namespace organtest
         float* channels[2] = {l.data(), r.data()};
         clap_audio_buffer_t buffer{};
         buffer.data32 = channels; buffer.channel_count = 2;
+        std::vector<float> il(frames), ir(frames);
+        float* inputs[2] = {il.data(), ir.data()};
+        clap_audio_buffer_t inBuffer{};
+        inBuffer.data32 = inputs; inBuffer.channel_count = 2;
+        if(input) for(uint32_t i = 0; i < frames; ++i) input(played + i, il[i], ir[i]);
+        played += frames;
         clap_process_t proc{};
         proc.steady_time = -1; proc.frames_count = frames;
         proc.audio_outputs = &buffer; proc.audio_outputs_count = 1;
+        if(input) { proc.audio_inputs = &inBuffer; proc.audio_inputs_count = 1; }
         proc.in_events = &in; proc.out_events = &outEvents;
         guarded = true;
         const auto status = p->process(p, &proc);

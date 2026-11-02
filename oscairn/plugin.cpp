@@ -670,11 +670,11 @@ namespace
     }
 
     const char* const noteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+}
 
-    bool paramsToText(const clap_plugin_t*, clap_id id, double value, char* text, uint32_t size)
+    bool valueToText(const Param& p, double value, char* text, uint32_t size)
     {
-        if(id < 1 || id > paramCount || !std::isfinite(value) || !size) return false;
-        const auto& p = params[id - 1];
+        if(!std::isfinite(value) || !size) return false;
         value = std::clamp(value, p.min, p.max);
         const auto k = std::lround(value);
         switch(p.text)
@@ -696,10 +696,9 @@ namespace
         }
         return true;
     }
-    bool paramsFromText(const clap_plugin_t*, clap_id id, const char* text, double* value)
+    bool textToValue(const Param& p, const char* text, double* value)
     {
-        if(id < 1 || id > paramCount || !text) return false;
-        const auto& p = params[id - 1];
+        if(!text) return false;
         double v;
         if(p.text == Text::List)
         {
@@ -739,6 +738,17 @@ namespace
         v = std::clamp(v, p.min, p.max);
         *value = p.stepped ? std::round(v) : v;
         return true;
+    }
+
+namespace
+{
+    bool paramsToText(const clap_plugin_t*, clap_id id, double value, char* text, uint32_t size)
+    {
+        return id >= 1 && id <= paramCount && valueToText(params[id - 1], value, text, size);
+    }
+    bool paramsFromText(const clap_plugin_t*, clap_id id, const char* text, double* value)
+    {
+        return id >= 1 && id <= paramCount && textToValue(params[id - 1], text, value);
     }
     void paramsFlush(const clap_plugin_t* p, const clap_input_events_t* in, const clap_output_events_t* out)
     {
@@ -895,14 +905,6 @@ const clap_plugin_t* create(const clap_host_t* host)
 
 namespace
 {
-    uint32_t factoryCount(const clap_plugin_factory_t*) { return 1; }
-    const clap_plugin_descriptor_t* factoryDescriptor(const clap_plugin_factory_t*, uint32_t i) { return i ? nullptr : &descriptor; }
-    const clap_plugin_t* factoryCreate(const clap_plugin_factory_t*, const clap_host_t* host, const char* id)
-    {
-        return id && !std::strcmp(id, descriptor.id) ? create(host) : nullptr;
-    }
-    const clap_plugin_factory_t pluginFactory = {factoryCount, factoryDescriptor, factoryCreate};
-
     const clap_preset_discovery_provider_descriptor_t providerDescriptor = {CLAP_VERSION_INIT, "org.oscairn.setbfree.programs", "setBfree programs", "Oscairn"};
     const clap_preset_discovery_provider_t* createProvider(const clap_preset_discovery_indexer_t* indexer)
     {
@@ -942,7 +944,6 @@ namespace
 
 const void* factory(const char* id)
 {
-    if(!std::strcmp(id, CLAP_PLUGIN_FACTORY_ID)) return &pluginFactory;
     if(!std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID) || !std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)) return &presetFactory;
     return nullptr;
 }

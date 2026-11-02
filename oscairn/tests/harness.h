@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,13 @@ namespace organtest
     {                                                                               \
         if(!(x)) { std::printf("FAILED %s:%d: %s\n", __FILE__, __LINE__, #x); ++organtest::failures; } \
     } while(0)
+
+    double rms(const std::vector<float>& x, size_t from, size_t to);
+    // Frequency from interpolated rising zero crossings over [from, to).
+    double frequency(const std::vector<float>& x, size_t from, size_t to, double rate);
+    // A Leslie horn's turns per second from a steady tone through it, from `from` on: the
+    // strongest periodicity of the tone's pitch (Doppler), measured every 5 ms, 2 to 12 Hz.
+    double rotorRate(const std::vector<float>& x, size_t from, double rate);
 
     struct Host
     {
@@ -65,8 +73,10 @@ namespace organtest
         const clap_plugin_t* p = nullptr;
         double rate;
         uint32_t maxBlock = 4096;
+        // An effect's stereo input at each frame since the instance started; none if empty.
+        std::function<void(uint64_t frame, float& left, float& right)> input;
 
-        explicit Instance(double rate, bool activate = true);
+        explicit Instance(double rate, bool activate = true, const clap_plugin_t* (*make)(const clap_host_t*) = organ::create);
         ~Instance();
         Instance(const Instance&) = delete;
 
@@ -87,6 +97,7 @@ namespace organtest
 
     private:
         uint32_t time = 0;
+        uint64_t played = 0;
         std::vector<std::pair<uint32_t, std::vector<uint8_t>>> queued;
         template<class T> void add(const T& e);
     };

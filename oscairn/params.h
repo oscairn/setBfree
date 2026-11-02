@@ -234,6 +234,10 @@ namespace organ
         return v;
     }();
 
+    // Value text both ways, in the C locale (plugin.cpp).
+    bool valueToText(const Param& p, double value, char* text, uint32_t size);
+    bool textToValue(const Param& p, const char* text, double* value);
+
     // Index of a parameter by name, at compile time.
     constexpr uint32_t index(const char* name)
     {

@@ -36,12 +36,12 @@ target_link_libraries(setbfree_engine PUBLIC $<$<NOT:$<PLATFORM_ID:Darwin>>:m>)
 add_executable(setbfree-gate-render tools/gate-render.c)
 target_link_libraries(setbfree-gate-render PRIVATE setbfree_engine)
 
-# The CLAP plugin. CLAP's headers and Oscairn's extension headers (both MIT) are vendored in
+# The CLAP bundle: the organ and the Leslie effect (entry.cpp). CLAP's headers and Oscairn's extension headers (both MIT) are vendored in
 # third_party/ with the commits they came from.
 add_library(oscairn_organ_headers INTERFACE)
 target_include_directories(oscairn_organ_headers INTERFACE third_party/clap/include third_party/oscairn-clap/include)
 
-add_library(oscairn_organ_plugin STATIC plugin.cpp plugin.h params.h)
+add_library(oscairn_organ_plugin STATIC plugin.cpp plugin.h params.h leslie.cpp leslie.h)
 target_link_libraries(oscairn_organ_plugin PUBLIC oscairn_organ_headers setbfree_engine)
 
 add_library(oscairn_organ MODULE entry.cpp)
@@ -56,7 +56,7 @@ install(TARGETS oscairn_organ LIBRARY DESTINATION lib/clap)
 if(OSCAIRN_ORGAN_TESTS)
     option(ORGAN_ALLOC_GUARD "Count allocations in process() (off for sanitizer builds)" ON)
     enable_testing()
-    add_executable(oscairn-organ-tests tests/test.cpp tests/harness.cpp tests/harness.h)
+    add_executable(oscairn-organ-tests tests/test.cpp tests/leslie_test.cpp tests/harness.cpp tests/harness.h entry.cpp)
     target_include_directories(oscairn-organ-tests PRIVATE tests .)
     target_compile_definitions(oscairn-organ-tests PRIVATE ORGAN_ALLOC_GUARD=$<BOOL:${ORGAN_ALLOC_GUARD}>)
     target_link_libraries(oscairn-organ-tests PRIVATE oscairn_organ_plugin)
@@ -67,5 +67,8 @@ if(OSCAIRN_ORGAN_TESTS)
     target_link_libraries(organ-listen PRIVATE oscairn_organ_plugin)
     foreach(test metadata determinism realtime state notes choke contexts sleep performance rebuild threads quiet rates click voices transpose startup memory presets overdrive)
         add_test(NAME organ-${test} COMMAND oscairn-organ-tests ${test})
+    endforeach()
+    foreach(test metadata realtime state rates speed rebuild tail contexts memory determinism threads)
+        add_test(NAME leslie-${test} COMMAND oscairn-organ-tests leslie-${test})
     endforeach()
 endif()

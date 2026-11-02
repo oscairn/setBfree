@@ -39,6 +39,7 @@
 #include "program.h"
 #include "state.h"
 #include "vibrato.h"
+#include "whirl.h"
 
 /* cfgParser.c asks the front end for its own settings; there are none. */
 int
@@ -296,3 +297,131 @@ sbf_release_frames (const sbf_engine* e)
 	return e->inst.synth->envSpan;
 #endif
 }
+
+#ifndef SETBFREE_STOCK /* the rotor needs whirlRamp, which upstream does not have */
+struct sbf_rotor {
+	void*           state;
+	void*           midicfg; /* the control functions whirl.c registers */
+	struct b_whirl* whirl;
+	double          rate;
+	uint32_t        phase; /* samples into the current fragment */
+	float           drumL[SBF_FRAGMENT], drumR[SBF_FRAGMENT];
+};
+
+void
+sbf_rotor_destroy (sbf_rotor* r)
+{
+	if (!r)
+		return;
+	if (r->whirl)
+		freeWhirl (r->whirl);
+	if (r->midicfg)
+		freeMidiCfg (r->midicfg);
+	if (r->state)
+		freeRunningConfig (r->state);
+	free (r);
+}
+
+sbf_rotor*
+sbf_rotor_create (double rate, const char* config)
+{
+	sbf_rotor* r = (sbf_rotor*)calloc (1, sizeof (sbf_rotor));
+	if (!r)
+		return NULL;
+	r->rate  = rate;
+	r->state = allocRunningConfig ();
+	r->whirl = allocWhirl ();
+	if (r->state)
+		r->midicfg = allocMidiCfg (r->state);
+	if (!r->state || !r->whirl || !r->midicfg) {
+		sbf_rotor_destroy (r);
+		return NULL;
+	}
+	initControllerTable (r->midicfg);
+	midiPrimeControllerMapping (r->midicfg);
+
+	locale_t c   = newlocale (LC_NUMERIC_MASK, "C", (locale_t)0);
+	locale_t old = c ? uselocale (c) : (locale_t)0;
+	const char* line = config;
+	while (line && *line) {
+		const char* end = strchr (line, '\n');
+		size_t      n   = end ? (size_t)(end - line) : strlen (line);
+		char        kv[1024];
+		char*       value;
+		if (n < sizeof (kv)) {
+			memcpy (kv, line, n);
+			kv[n] = 0;
+			if ((value = strchr (kv, '='))) {
+				ConfigContext cfg = { "", 0, kv, value + 1 };
+				*value            = 0;
+				whirlConfig (r->whirl, &cfg);
+			}
+		}
+		line = end ? end + 1 : NULL;
+	}
+	initWhirl (r->whirl, r->midicfg, rate);
+	r->whirl->rampByCaller = 1;
+	if (c) {
+		uselocale (old);
+		freelocale (c);
+	}
+	return r;
+}
+
+void
+sbf_rotor_speed (sbf_rotor* r, int speed)
+{
+	setRevSelect (r->whirl, speed == 0 ? WHIRL_STOP : speed == 2 ? WHIRL_FAST : WHIRL_SLOW);
+}
+
+void
+sbf_rotor_follow (sbf_rotor* r, const sbf_rotor* from)
+{
+	r->whirl->hornAngleGRD = from->whirl->hornAngleGRD;
+	r->whirl->drumAngleGRD = from->whirl->drumAngleGRD;
+	r->whirl->hornIncr     = from->whirl->hornIncr;
+	r->whirl->drumIncr     = from->whirl->drumIncr;
+	r->phase               = from->phase;
+	setRevSelect (r->whirl, r->whirl->revSelect); /* accelerate or brake from there */
+}
+
+void
+sbf_rotor_clear (sbf_rotor* r)
+{
+	struct b_whirl* w = r->whirl;
+	memset (w->HLbuf, 0, sizeof (w->HLbuf));
+	memset (w->HRbuf, 0, sizeof (w->HRbuf));
+	memset (w->DLbuf, 0, sizeof (w->DLbuf));
+	memset (w->DRbuf, 0, sizeof (w->DRbuf));
+	memset (w->adx0, 0, sizeof (w->adx0));
+	memset (w->adx1, 0, sizeof (w->adx1));
+	memset (w->adx2, 0, sizeof (w->adx2));
+	memset (w->z, 0, sizeof (w->z));
+	/* the filters' two state words after their coefficients (whirl.h, filterCoeff) */
+	w->drfL[z0] = w->drfL[z1] = w->drfR[z0] = w->drfR[z1] = 0;
+	w->hafw[z0] = w->hafw[z1] = w->hbfw[z0] = w->hbfw[z1] = 0;
+}
+
+/* The speeds move once per fragment, as in the organ, whatever lengths the caller renders. */
+void
+sbf_rotor_process (sbf_rotor* r, const float* in, float* left, float* right, uint32_t n)
+{
+	while (n) {
+		const uint32_t k = n < SBF_FRAGMENT - r->phase ? n : SBF_FRAGMENT - r->phase;
+		if (r->phase == 0)
+			whirlRamp (r->whirl, SBF_FRAGMENT);
+		whirlProc3 (r->whirl, in, left, right, r->drumL, r->drumR, k);
+		in += k;
+		left += k;
+		right += k;
+		n -= k;
+		r->phase = (r->phase + k) % SBF_FRAGMENT;
+	}
+}
+
+double
+sbf_rotor_horn_rpm (const sbf_rotor* r)
+{
+	return r->whirl->hornIncr * r->rate * 60.0;
+}
+#endif

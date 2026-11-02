@@ -17,7 +17,8 @@
  */
 
 // Tests of the setBfree plugin through its CLAP interface with a minimal host
-// (doc/oscairn-plan.md, section 4). Run with a test name, or "all".
+// (doc/oscairn-plan.md, section 4). Run with a test name, or "all"; leslie_test.cpp has
+// the Leslie effect's.
 
 #include "harness.h"
 
@@ -66,13 +67,6 @@ namespace
     }
 
     constexpr uint32_t F_ = SBF_FRAGMENT;
-
-    double rms(const std::vector<float>& x, size_t from, size_t to)
-    {
-        double s = 0;
-        for(size_t i = from; i < to; ++i) s += double(x[i]) * x[i];
-        return std::sqrt(s / double(to - from));
-    }
 
     // Metadata: unique IDs, ranges, module paths, value text both ways, hints.
     void metadata()
@@ -680,21 +674,6 @@ namespace
         CHECK(written == 0);
     }
 
-    // Frequency from interpolated rising zero crossings over [from, to).
-    double frequency(const std::vector<float>& x, size_t from, size_t to, double rate)
-    {
-        double first = -1, last = -1;
-        int n = 0;
-        for(size_t i = from + 1; i < to; ++i)
-            if(x[i - 1] < 0 && x[i] >= 0)
-            {
-                const double t = double(i - 1) + x[i - 1] / (x[i - 1] - x[i]);
-                if(first < 0) first = t; else ++n;
-                last = t;
-            }
-        return n > 0 ? n * rate / (last - first) : 0;
-    }
-
     // One clean 8' tone: no Leslie, reverb, vibrato, percussion or click.
     void plain(Instance& o)
     {
@@ -759,22 +738,7 @@ namespace
             o.at(0).param(param("Upper 16'"), 0).param(param("Upper 5 1/3'"), 0).param(param("Upper 8'"), 8)
                 .param(param("Reverb"), 0).param(param("Leslie speed"), 2).note(CLAP_EVENT_NOTE_ON, 0, 93, 1);
             const auto x = o.render(uint32_t(rate * 6), 512).left;
-            // The horn's Doppler shift: the strongest periodicity of the tone's pitch, measured
-            // every 5 ms, between 2 and 12 Hz, to 0.01 Hz.
-            std::vector<double> e;
-            const size_t w = size_t(rate / 200);
-            for(size_t i = size_t(rate * 3); i + 2 * w <= x.size(); i += w) e.push_back(frequency(x, i, i + 2 * w, rate));
-            double mean = 0;
-            for(double v : e) mean += v / double(e.size());
-            for(auto& v : e) v -= mean;
-            double best = 0, power = 0;
-            for(double f = 2; f <= 12; f += 0.01)
-            {
-                double re = 0, im = 0;
-                for(size_t k = 0; k < e.size(); ++k) { re += e[k] * std::cos(2 * M_PI * f * k / 200); im += e[k] * std::sin(2 * M_PI * f * k / 200); }
-                if(re * re + im * im > power) { power = re * re + im * im; best = f; }
-            }
-            m.leslie = best * 60; // RPM
+            m.leslie = rotorRate(x, size_t(rate * 3), rate) * 60; // RPM
         }
         return m;
     }
@@ -1073,11 +1037,15 @@ namespace
     };
 }
 
+extern const std::map<std::string, void (*)()> leslieTests; // leslie_test.cpp
+
 int main(int argc, char** argv)
 {
     const std::string which = argc > 1 ? argv[1] : "all";
     bool ran = false;
-    for(const auto& [name, test] : tests)
+    std::map<std::string, std::function<void()>> all(tests.begin(), tests.end());
+    for(const auto& [name, test] : leslieTests) all[name] = test;
+    for(const auto& [name, test] : all)
     {
         if(which != "all" && which != name) continue;
         ran = true;

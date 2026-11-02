@@ -16,11 +16,31 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+// The bundle: setBfree (the organ) and setBfree Leslie (the rotary speaker as an effect).
+
+#include "leslie.h"
 #include "plugin.h"
+
+#include <cstring>
+
+namespace
+{
+    const clap_plugin_descriptor_t* const descriptors[] = {&organ::descriptor, &leslie::descriptor};
+    const clap_plugin_factory_t pluginFactory = {
+        [](const clap_plugin_factory_t*) -> uint32_t { return 2; },
+        [](const clap_plugin_factory_t*, uint32_t i) { return i < 2 ? descriptors[i] : nullptr; },
+        [](const clap_plugin_factory_t*, const clap_host_t* host, const char* id) -> const clap_plugin_t* {
+            if(!id) return nullptr;
+            if(!std::strcmp(id, organ::descriptor.id)) return organ::create(host);
+            if(!std::strcmp(id, leslie::descriptor.id)) return leslie::create(host);
+            return nullptr;
+        },
+    };
+}
 
 extern "C" CLAP_EXPORT const clap_plugin_entry_t clap_entry = {
     CLAP_VERSION_INIT,
     [](const char*) { return true; },
     [] {},
-    [](const char* id) { return organ::factory(id); },
+    [](const char* id) -> const void* { return !std::strcmp(id, CLAP_PLUGIN_FACTORY_ID) ? &pluginFactory : organ::factory(id); },
 };
