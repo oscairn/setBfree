@@ -33,6 +33,7 @@
 #include <clap/ext/preset-load.h>
 #include <clap/factory/preset-discovery.h>
 #include <oscairn-clap/memory.h>
+#include <oscairn-clap/preset-discovery-plugin.hpp>
 #include <oscairn-clap/sound-contexts-plugin.hpp>
 #include <oscairn-clap/ui.h>
 
@@ -586,17 +587,46 @@ namespace
             auto& s = self(p);
             auto* c = s.freeSlot();
             if(!c) return fail("all sound slots are in use");
-            auto& slot = s.slots[s.slotOf(*c)];
-            for(uint32_t i = 0; i < paramCount; ++i) slot.shadow[i] = next.values[i];
-            slot.level = std::pow(10.0, next.values[iVolume] / 20.0);
-            if(s.rate > 0)
-            {
-                auto* e = s.build(next.values);
-                if(!e) return fail("out of memory");
-                sbf_destroy(slot.pending.exchange(e, std::memory_order_release));
-            }
             c->patch = next;
+            if(!s.install(*c)) return fail("out of memory");
             return s.publish(*c, name);
+        }
+        // Main thread: an engine for a new sound's patch (built when active, else at activation).
+        bool install(Context& c)
+        {
+            auto& slot = slots[slotOf(c)];
+            for(uint32_t i = 0; i < paramCount; ++i) slot.shadow[i] = c.patch.values[i];
+            slot.level = std::pow(10.0, c.patch.values[iVolume] / 20.0);
+            if(rate <= 0) return true;
+            auto* e = build(c.patch.values);
+            if(!e) return false;
+            sbf_destroy(slot.pending.exchange(e, std::memory_order_release));
+            return true;
+        }
+        // A setBfree program, by its MIDI program number as the preset's load key.
+        bool readPreset(uint32_t kind, const char*, const char* key, Patch& patch, std::string& error)
+        {
+            char* end = nullptr;
+            const long pc = key ? std::strtol(key, &end, 10) : -1;
+            sbf_program g;
+            if(kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || !end || end == key || *end || pc < 0 || pc > 127 || !sbf_program_get(int(pc), &g))
+            { error = "no such program"; return false; }
+            patch.values = programValues(g);
+            return true;
+        }
+        // prepare_preset: the helper reads the preset into a new sound; its engine is built here.
+        static uint32_t preparePreset(const clap_plugin_t* p, const char* name, uint32_t kind, const char* location, const char* key, char* message, uint32_t capacity)
+        {
+            const auto id = Base::preparePreset(p, name, kind, location, key, message, capacity);
+            auto& s = self(p);
+            for(auto& c : s.contexts)
+                if(id != CLAP_INVALID_ID && c.prepared && c.id == id && !s.install(c))
+                {
+                    c.prepared = false; // never selected: nothing holds it
+                    if(message && capacity) std::snprintf(message, capacity, "out of memory");
+                    return CLAP_INVALID_ID;
+                }
+            return id;
         }
         void discarded(Context& c)
         {
@@ -791,7 +821,7 @@ namespace
     const clap_plugin_note_ports_t notePortsExt = {notePortsCount, notePortsGet};
 
     const clap_plugin_state_t stateExt = {Organ::saveSnapshot, Organ::loadSnapshot};
-    const oscairn_plugin_sound_contexts_t soundContextsExt = {Organ::capacity, Organ::get, Organ::prepare, Organ::select, Organ::discard, &stateExt};
+    const oscairn_plugin_sound_contexts_t soundContextsExt = {Organ::capacity, Organ::get, Organ::prepare, Organ::select, Organ::discard, &stateExt, Organ::preparePreset};
 
     // oscairn.memory: one engine per prepared sound; the first sound is the context, the rest
     // of the state's sounds are counted as shared.
@@ -821,13 +851,11 @@ namespace
     // Presets: setBfree's built-in programs that set drawbars, keyed by MIDI program number.
     const clap_plugin_preset_load_t presetLoadExt = {[](const clap_plugin_t* p, uint32_t kind, const char* location, const char* key) {
         auto& s = self(p);
-        char* end = nullptr;
-        const long pc = key ? std::strtol(key, &end, 10) : -1;
-        sbf_program g;
-        const bool ok = kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN && end && end != key && !*end && pc >= 0 && pc < 128 && sbf_program_get(int(pc), &g);
+        Patch patch;
+        std::string error;
         auto* hp = s.host ? static_cast<const clap_host_preset_load_t*>(s.host->get_extension(s.host, CLAP_EXT_PRESET_LOAD)) : nullptr;
-        if(!ok) { if(hp) hp->on_error(s.host, kind, location, key, 0, "no such program"); return false; }
-        s.loadPreset(programValues(g));
+        if(!s.readPreset(kind, location, key, patch, error)) { if(hp) hp->on_error(s.host, kind, location, key, 0, error.c_str()); return false; }
+        s.loadPreset(patch.values);
         if(hp) hp->loaded(s.host, kind, location, key);
         return true;
     }};
@@ -905,46 +933,28 @@ const clap_plugin_t* create(const clap_host_t* host)
 
 namespace
 {
-    const clap_preset_discovery_provider_descriptor_t providerDescriptor = {CLAP_VERSION_INIT, "org.oscairn.setbfree.programs", "setBfree programs", "Oscairn"};
-    const clap_preset_discovery_provider_t* createProvider(const clap_preset_discovery_indexer_t* indexer)
+    // Preset discovery (the SDK's factory): setBfree's programs inside the plugin, keyed by MIDI
+    // program number, so a key keeps its program if the list changes.
+    struct Presets
     {
-        auto* provider = new clap_preset_discovery_provider_t{};
-        provider->desc = &providerDescriptor;
-        provider->provider_data = const_cast<clap_preset_discovery_indexer_t*>(indexer);
-        provider->init = [](const clap_preset_discovery_provider_t* p) {
-            auto* indexer = static_cast<const clap_preset_discovery_indexer_t*>(p->provider_data);
-            const clap_preset_discovery_location_t location{CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT, "setBfree programs", CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr};
-            return indexer->declare_location(indexer, &location);
-        };
-        provider->destroy = [](const clap_preset_discovery_provider_t* p) { delete p; };
-        provider->get_metadata = [](const clap_preset_discovery_provider_t*, uint32_t kind, const char*, const clap_preset_discovery_metadata_receiver_t* r) {
-            if(kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN) return false;
-            const clap_universal_plugin_id_t id{"clap", descriptor.id};
+        static constexpr clap_preset_discovery_provider_descriptor_t descriptor = {CLAP_VERSION_INIT, "org.oscairn.setbfree.programs", "setBfree programs", "Oscairn"};
+        static constexpr const char* pluginId = "org.oscairn.setbfree";
+        static void declare(oscairn::presets::Declarations& d) { d.inside("Factory"); }
+        static void list(uint32_t kind, const char*, oscairn::presets::Listing& l)
+        {
+            if(kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN) return;
             for(int pc = 0; pc < 128; ++pc)
             {
                 sbf_program g;
-                if(!sbf_program_get(pc, &g)) continue;
-                const auto key = std::to_string(pc);
-                if(!r->begin_preset(r, g.name, key.c_str())) break;
-                r->add_plugin_id(r, &id);
-                r->set_flags(r, CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+                if(sbf_program_get(pc, &g) && !l.add(g.name, std::to_string(pc).c_str())) return;
             }
-            return true;
-        };
-        provider->get_extension = [](const clap_preset_discovery_provider_t*, const char*) -> const void* { return nullptr; };
-        return provider;
-    }
-    const clap_preset_discovery_factory_t presetFactory = {
-        [](const clap_preset_discovery_factory_t*) -> uint32_t { return 1; },
-        [](const clap_preset_discovery_factory_t*, uint32_t i) { return i ? nullptr : &providerDescriptor; },
-        [](const clap_preset_discovery_factory_t*, const clap_preset_discovery_indexer_t* indexer, const char* id) {
-            return id && !std::strcmp(id, providerDescriptor.id) ? createProvider(indexer) : nullptr;
-        }};
+        }
+    };
 }
 
 const void* factory(const char* id)
 {
-    if(!std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID) || !std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)) return &presetFactory;
+    if(!std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID) || !std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)) return &oscairn::presets::Factory<Presets>::factory;
     return nullptr;
 }
 }

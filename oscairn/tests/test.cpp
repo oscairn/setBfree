@@ -979,7 +979,7 @@ namespace
         CHECK(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, &receiver));
         provider->destroy(provider);
         std::printf("  %zu presets, the first \"%s\"\n", found.presets.size(), found.presets.empty() ? "" : found.presets[0].first.c_str());
-        CHECK(found.presets.size() >= 15 && found.pluginId == "org.oscairn.setbfree");
+        CHECK(found.presets.size() == 55 && found.pluginId == "org.oscairn.setbfree");
         // Load each one, active and inactive: its drawbars become the parameters.
         for(bool activate : {true, false})
             for(const auto& [name, key] : found.presets)
@@ -1001,6 +1001,39 @@ namespace
             }
         Instance o(48000);
         CHECK(!o.ext<clap_plugin_preset_load_t>(CLAP_EXT_PRESET_LOAD)->from_location(o.p, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "200"));
+
+        // A sound prepared from a preset (oscairn.sound-contexts draft 5) sounds as the program
+        // loaded with preset-load; its saved Sound holds the values, not the preset's key, so it
+        // opens whatever the preset list becomes.
+        auto* contexts = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        CHECK(contexts->prepare_preset);
+        char message[128] = "";
+        CHECK(contexts->prepare_preset(o.p, "x", CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "26", message, sizeof(message)) == CLAP_INVALID_ID && *message);
+        CHECK(contexts->prepare_preset(o.p, "x", CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, "somewhere", "0", nullptr, 0) == CLAP_INVALID_ID);
+        CHECK(contexts->prepare_preset(o.p, "x", CLAP_PRESET_DISCOVERY_LOCATION_FILE, "/nowhere.pgm", "0", nullptr, 0) == CLAP_INVALID_ID);
+        auto chord = [](Instance& i) {
+            i.at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 1).note(CLAP_EVENT_NOTE_ON, 0, 64, 2).note(CLAP_EVENT_NOTE_ON, 0, 67, 3);
+            return i.render(9600, 512).left;
+        };
+        for(const auto& [name, key] : found.presets)
+        {
+            Instance prepared(48000), loaded(48000);
+            auto* c = prepared.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+            const auto id = c->prepare_preset(prepared.p, name.c_str(), CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, key.c_str(), message, sizeof(message));
+            CHECK(id != CLAP_INVALID_ID && c->select(prepared.p, id, -1));
+            CHECK(loaded.ext<clap_plugin_preset_load_t>(CLAP_EXT_PRESET_LOAD)->from_location(loaded.p, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, key.c_str()));
+            for(auto* i : {&prepared, &loaded}) { i->render(512, 512); i->service(); }
+            const auto a = chord(prepared), b = chord(loaded);
+            if(a != b) std::printf("  %s (%s): prepared from the preset, it sounds unlike the program loaded\n", name.c_str(), key.c_str());
+            CHECK(a == b && (rms(a, 4800, 9600) > 1e-3 || name == "Silence")); // program 21 is silent
+            // Reopened from its state (patch values only; no preset is looked up), it sounds the same.
+            const auto saved = prepared.save();
+            Instance reopened(48000), again(48000);
+            CHECK(reopened.load(saved) && reopened.save() == saved && again.load(saved));
+            for(auto* i : {&reopened, &again}) { i->render(512, 512); i->service(); }
+            CHECK(chord(reopened) == chord(again));
+        }
+        std::printf("  %zu sounds prepared from presets, each as its program\n", found.presets.size());
     }
 
     // Overdrive at its defaults is about as loud as clean, as in setBfree (its preamp's own
