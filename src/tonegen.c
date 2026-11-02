@@ -2983,7 +2983,7 @@ oscKeyOff (struct b_tonegen* t, unsigned char keyNumber, unsigned char realKey)
 		/* Flag the key as inactive */
 		t->activeKeys[keyNumber] = 0;
 		if (realKey != 255) {
-			t->_activeKeys[realKey / 32] &= ~(1 << (realKey % 32));
+			t->_activeKeys[realKey / 32] &= ~(1u << (realKey % 32));
 		}
 		/* Track upper manual keys for percussion trigger */
 		if (keyNumber < 64) {
@@ -3020,7 +3020,7 @@ oscKeyOn (struct b_tonegen* t, unsigned char keyNumber, unsigned char realKey)
 	/* Mark the key as active */
 	t->activeKeys[keyNumber] = 1;
 	if (realKey != 255) {
-		t->_activeKeys[realKey / 32] |= (1 << (realKey % 32));
+		t->_activeKeys[realKey / 32] |= (1u << (realKey % 32));
 	}
 	/* Track upper manual for percussion trigger */
 	if (keyNumber < 64) {
