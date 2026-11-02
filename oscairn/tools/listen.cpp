@@ -22,6 +22,9 @@
 
 #include "harness.h"
 
+#include "engine.h"
+#include "leslie.h"
+
 #include <clap/ext/preset-load.h>
 #include <clap/factory/preset-discovery.h>
 
@@ -113,6 +116,29 @@ namespace
         for(int i = 0; i <= 40; ++i) o.at(uint32_t((0.5 + i * 0.1) * rate)).midi(0xB0, 11, uint8_t(40 + i * 87 / 40));
     }
 
+    // The engine alone (no plugin), for settings the plugin does not offer: the key click and
+    // release in one 128-sample fragment at every rate (osc.envelope.rate=0), as upstream.
+    Output engineStaccato(double rate, const char* config)
+    {
+        sbf_engine* e = sbf_create(rate, config);
+        sbf_control(e, sbf_control_id("rotary.speed-preset"), 64); // Leslie stopped: the clicks unmasked
+        Output out;
+        float l[SBF_FRAGMENT], r[SBF_FRAGMENT];
+        const uint32_t fragments = uint32_t(3.5 * rate) / SBF_FRAGMENT;
+        for(uint32_t f = 0; f < fragments; ++f)
+        {
+            const double t = double(f) * SBF_FRAGMENT / rate;
+            const double at = std::fmod(t, 0.5);
+            if(at < SBF_FRAGMENT / rate || (at >= 0.15 && at < 0.15 + SBF_FRAGMENT / rate))
+                for(uint8_t k : {60, 64, 67}) { const uint8_t m[3] = {uint8_t(at < 0.15 ? 0x90 : 0x80), k, 127}; sbf_midi(e, m, 3); }
+            sbf_render(e, l, r);
+            out.left.insert(out.left.end(), l, l + SBF_FRAGMENT);
+            out.right.insert(out.right.end(), r, r + SBF_FRAGMENT);
+        }
+        sbf_destroy(e);
+        return out;
+    }
+
     struct Example
     {
         std::string file;
@@ -153,6 +179,8 @@ int main(int argc, char** argv)
         {"08-wheels-trebly.wav", {{"Wheel EQ low level", 0.2}, {"Wheel EQ high level", 1.5}}, phrase, 4},
         {"08-wheels-scoop.wav", {{"Wheel EQ low slope", -2}, {"Wheel EQ high slope", 2}}, phrase, 4},
         {"10-rate-44100.wav", {{"Percussion", 1}}, staccato, 3.5, 44100},
+        {"10-rate-48000.wav", {{"Percussion", 1}}, staccato, 3.5, 48000},
+        {"10-rate-88200.wav", {{"Percussion", 1}}, staccato, 3.5, 88200},
         {"10-rate-96000.wav", {{"Percussion", 1}}, staccato, 3.5, 96000},
         {"10-rate-192000.wav", {{"Percussion", 1}}, staccato, 3.5, 192000},
     };
@@ -178,6 +206,51 @@ int main(int argc, char** argv)
         double peak = 0;
         for(float v : out.left) peak = std::max(peak, double(std::fabs(v)));
         std::printf("%s: peak %.3f\n", e.file.c_str(), peak);
+    }
+
+    // Key click at each rate, high click so it is easy to hear: as it is now (2.9 ms at every
+    // rate) and as upstream's (one fragment), from the same engine.
+    for(double rate : {44100.0, 48000.0, 88200.0, 96000.0, 192000.0})
+        for(bool fragment : {false, true})
+        {
+            const std::string name = "11-click-" + std::to_string(int(rate)) + (fragment ? "-one-fragment.wav" : ".wav");
+            const std::string config = std::string("osc.attack.click.level=1\nosc.release.click.level=0.75\n") + (fragment ? "osc.envelope.rate=0\n" : "");
+            writeWav(dir + "/" + name, engineStaccato(rate, config.c_str()), rate);
+            std::printf("%s\n", name.c_str());
+        }
+
+    // setBfree Leslie, the effect: the organ dry (its own Leslie off), then through the effect,
+    // the mod wheel going fast at 2 s and back at 5.5 s; a sawtooth chord; at 192 kHz.
+    for(double rate : {48000.0, 192000.0})
+    {
+        Instance organ(rate);
+        organ.at(0).param(param(organ, "Leslie"), 0).param(param(organ, "Upper 4'"), 8);
+        organ.render(512, 512);
+        organ.service();
+        organ.render(uint32_t(rate / 2), 512);
+        notes(organ, rate, {{0, 9, 60}, {0, 9, 64}, {0, 9, 67}, {0, 9, 72}});
+        const auto dry = organ.render(uint32_t(10 * rate), 512);
+        const std::string suffix = rate == 48000 ? "" : "-" + std::to_string(int(rate));
+        if(rate == 48000) writeWav(dir + "/12-leslie-effect-dry-organ.wav", dry, rate);
+        struct Source { std::string file; std::function<void(uint64_t, float&, float&)> input; };
+        std::vector<Source> sources = {
+            {"12-leslie-effect-organ" + suffix + ".wav", [&dry](uint64_t i, float& l, float& r) { l = i < dry.left.size() ? dry.left[i] : 0.f; r = i < dry.right.size() ? dry.right[i] : 0.f; }},
+        };
+        if(rate == 48000)
+            sources.push_back({"12-leslie-effect-saw.wav", [rate](uint64_t i, float& l, float& r) {
+                const double t = double(i) / rate;
+                double x = 0;
+                for(double hz : {130.81, 155.56, 196.0, 233.08}) x += 2 * std::fmod(t * hz, 1.0) - 1; // C minor 7, sawtooth
+                l = r = t < 9 ? float(0.08 * x) : 0.f;
+            }});
+        for(auto& src : sources)
+        {
+            Instance fx(rate, true, leslie::create);
+            fx.input = src.input;
+            fx.at(uint32_t(2 * rate)).midi(0xB0, 1, 127).at(uint32_t(5.5 * rate)).midi(0xB0, 1, 0);
+            writeWav(dir + "/" + src.file, fx.render(uint32_t(10 * rate), 512), rate);
+            std::printf("%s\n", src.file.c_str());
+        }
     }
     return 0;
 }
