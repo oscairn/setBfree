@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-// Tests of Oscairn Organ through its CLAP interface with a minimal host
+// Tests of the setBfree plugin through its CLAP interface with a minimal host
 // (doc/oscairn-plan.md, section 4). Run with a test name, or "all".
 
 #include "harness.h"
@@ -77,6 +77,7 @@ namespace
     // Metadata: unique IDs, ranges, module paths, value text both ways, hints.
     void metadata()
     {
+        CHECK(!std::strcmp(organ::descriptor.id, "org.oscairn.setbfree") && !std::strcmp(organ::descriptor.name, "setBfree"));
         Instance o(48000);
         auto* params = o.ext<clap_plugin_params_t>(CLAP_EXT_PARAMS);
         auto* ui = o.ext<oscairn_plugin_ui_t>(OSCAIRN_EXT_UI);
@@ -1014,7 +1015,7 @@ namespace
         CHECK(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, &receiver));
         provider->destroy(provider);
         std::printf("  %zu presets, the first \"%s\"\n", found.presets.size(), found.presets.empty() ? "" : found.presets[0].first.c_str());
-        CHECK(found.presets.size() >= 15 && found.pluginId == "org.oscairn.organ");
+        CHECK(found.presets.size() >= 15 && found.pluginId == "org.oscairn.setbfree");
         // Load each one, active and inactive: its drawbars become the parameters.
         for(bool activate : {true, false})
             for(const auto& [name, key] : found.presets)

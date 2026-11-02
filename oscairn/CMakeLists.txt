@@ -46,7 +46,7 @@ target_link_libraries(oscairn_organ_plugin PUBLIC oscairn_organ_headers setbfree
 
 add_library(oscairn_organ MODULE entry.cpp)
 target_link_libraries(oscairn_organ PRIVATE oscairn_organ_plugin)
-set_target_properties(oscairn_organ PROPERTIES PREFIX "" SUFFIX ".clap" OUTPUT_NAME oscairn-organ
+set_target_properties(oscairn_organ PROPERTIES PREFIX "" SUFFIX ".clap" OUTPUT_NAME setbfree
     CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(APPLE)
     target_link_options(oscairn_organ PRIVATE -Wl,-exported_symbol,_clap_entry)

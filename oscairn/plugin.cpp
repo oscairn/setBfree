@@ -16,7 +16,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-// Oscairn Organ: setBfree's tonewheel organ as a CLAP instrument with Oscairn's native
+// setBfree: the tonewheel organ as a CLAP instrument with Oscairn's native
 // sound contexts (doc/oscairn-plan.md, section 4).
 //
 // Each prepared sound owns a whole setBfree engine. A "voice" of the sound-context helper
@@ -834,8 +834,8 @@ namespace
 
 const clap_plugin_descriptor_t descriptor = {
     CLAP_VERSION_INIT,
-    "org.oscairn.organ",
-    "Oscairn Organ",
+    "org.oscairn.setbfree",
+    "setBfree",
     "Oscairn",
     "https://github.com/oscairn/setBfree",
     "",
@@ -903,7 +903,7 @@ namespace
     }
     const clap_plugin_factory_t pluginFactory = {factoryCount, factoryDescriptor, factoryCreate};
 
-    const clap_preset_discovery_provider_descriptor_t providerDescriptor = {CLAP_VERSION_INIT, "org.oscairn.organ.programs", "setBfree programs", "Oscairn"};
+    const clap_preset_discovery_provider_descriptor_t providerDescriptor = {CLAP_VERSION_INIT, "org.oscairn.setbfree.programs", "setBfree programs", "Oscairn"};
     const clap_preset_discovery_provider_t* createProvider(const clap_preset_discovery_indexer_t* indexer)
     {
         auto* provider = new clap_preset_discovery_provider_t{};

@@ -1,4 +1,4 @@
-# Oscairn Organ
+# setBfree for Oscairn
 
 setBfree's tonewheel organ (tone generator, vibrato scanner, percussion, overdrive, reverb
 and Leslie) as a CLAP instrument for [Oscairn](https://github.com/jbschooley/oscairn), with
@@ -12,7 +12,7 @@ ctest --test-dir build --output-on-failure
 oscairn/tools/compare-stock.sh build/gate   # the stock-vs-fork gate
 ```
 
-`build/oscairn-organ.clap` is the plugin.
+`build/setbfree.clap` is the plugin: "setBfree", `org.oscairn.setbfree`.
 
 ## Credits and licence
 
