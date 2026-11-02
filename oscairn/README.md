@@ -1,7 +1,7 @@
 # setBfree for Oscairn
 
 setBfree's tonewheel organ (tone generator, vibrato scanner, percussion, overdrive, reverb
-and Leslie) as a CLAP instrument for [Oscairn](https://github.com/jbschooley/oscairn), with
+and Leslie) as a CLAP instrument for [Oscairn](https://github.com/oscairn/oscairn), with
 Oscairn's native sound contexts. The plan, the integration checklist and what differs from
 upstream setBfree are in [doc/oscairn-plan.md](../doc/oscairn-plan.md).
 

@@ -355,7 +355,7 @@ it is "already up to date"; upstream's `make` builds in CI.
 ### Session 2 (2026-11-02): key click, hook, transpose, names, the Leslie effect
 
 Jacob's decisions are in section 9 (2, 4, 10, 11). Oscairn read at `a337c13` (synced with
-GitHub `jbschooley/oscairn` main); its SDK headers re-vendored unchanged from that commit,
+GitHub `oscairn/oscairn` main); its SDK headers re-vendored unchanged from that commit,
 `effect-contexts.h` added.
 
 **Engine changes** (continuing session 1's list):
