@@ -1,8 +1,10 @@
 # Oscairn plan: a tonewheel organ on setBfree
 
-This branch (`oscairn`) turns setBfree into Oscairn's organ: a CLAP instrument, "Oscairn
-Organ", that keeps setBfree's tonewheel generator, vibrato scanner, percussion, overdrive,
-reverb and Leslie model and adds what Oscairn asks of a native instrument. The default
+This branch (`oscairn`) turns setBfree into Oscairn's organ: a CLAP instrument, "setBfree"
+(`org.oscairn.setbfree`), that keeps setBfree's tonewheel generator, vibrato scanner,
+percussion, overdrive, reverb and Leslie model and adds what Oscairn asks of a native
+instrument, and a second plugin in the same bundle, "setBfree Leslie"
+(`org.oscairn.setbfree.leslie`), the Leslie alone as an audio effect (section 6). The default
 branch (`master`) tracks upstream unchanged.
 
 ## Contents
@@ -81,7 +83,7 @@ item gets a test in `oscairn/tests/` unless it says otherwise.
 
 | # | Item | How | Test |
 | --- | --- | --- | --- |
-| 1 | CLAP build: macOS arm64, Linux ARM64, Linux x86_64 | CMake in `oscairn/` builds the engine as a static library and `oscairn-organ.clap`; CI on all three | CI jobs; Oscairn's `kick-clap-scan` lists it |
+| 1 | CLAP build: macOS arm64, Linux ARM64, Linux x86_64 | CMake in `oscairn/` builds the engine as a static library and `setbfree.clap` (both plugins); CI on all three | CI jobs; Oscairn's `kick-clap-scan` lists it |
 | 2 | Load checks | Factory, full interface, stereo out, one note port, params/state/audio-ports complete | `kick-clap-scan`, `oscairn-plugin-check` |
 | 3 | Real-time safe `process` | All allocation in init/activate/main thread; process touches preallocated engines only; structural parameter changes rebuild an engine on the main thread and hand it over lock-free | Allocation-guard test: counts `malloc`/`calloc`/`realloc`/`free`/`new` on the audio thread during `process` across notes, every parameter, sound switches, chokes |
 | 4 | Deterministic, architecture-independent state | State is text: a version line, then each prepared sound's name and every parameter value printed with `%.17g` in the C locale; the same bytes on every machine | Round trip byte-identical; a fixed state renders identically after load; golden state text checked in |
@@ -107,9 +109,9 @@ setBfree mixes keys onto nine buses inside the tone generator; there is no per-k
 A host choke or a volume expression on one key needs that key's contribution alone.
 As built: each sound's output is scaled by the largest `amplitude()` (volume expression times
 choke fade, from `sound-contexts-plugin.hpp`) of its held keys, so a key's volume expression
-or choke lowers the sound only where no other key of it is louder. A choked key that is the
-only key of its sound fades over 3 ms; with other keys held, it is released after the 3 ms and
-its own release (one 128-sample fragment) follows. Exact per-key gain would mean scaling that
+or choke lowers the sound only where no other key of it is louder. A choked key is also
+released at once: the only key of its sound fades over 3 ms; with other keys held, its own
+release (2.9 ms at every rate, from the next fragment) is the fade, silent within 6 ms. Exact per-key gain would mean scaling that
 key's contact gains in the tone generator: later work if Oscairn's voice stealing makes it
 audible.
 
@@ -122,7 +124,7 @@ the choice becomes a default or a preset.
 | Item | What setBfree has | Work | Listening files |
 | --- | --- | --- | --- |
 | Tonewheel models | Wheel harmonics and an EQ curve across the wheels (`osc.eq.*`); variants in `cfg/osc-*.cfg` (bassy, middy, trebly, scoop, no crosstalk, sine/triangle/square/saw) | Expose the EQ macro and its four spline points as parameters; name the variants as a list | Same chord and drawbars with each variant |
-| Key click | Attack/release click levels, burst lengths, envelope models (click, cosine, linear, shelf) | Parameters; check the burst length in milliseconds is rate-independent (it is defined against the 128-sample fragment) | Staccato single notes and chords at click levels 0, default, high |
+| Key click | Attack/release click levels, burst lengths, envelope models (click, cosine, linear, shelf) | Parameters; the attack and release take 2.9 ms at every rate (session 2, `osc.envelope.rate`) | Staccato single notes and chords at click levels 0, default, high; the click at each rate, before and after |
 | Leakage/crosstalk | Four crosstalk amounts and a contribution floor | Parameters | Slow chords with leakage off/default/2× |
 | Percussion | Fast/slow decay times, soft/normal levels, overall gain, retrigger rule | Parameters | 2nd and 3rd harmonic, fast and slow, legato vs detached |
 | Vibrato/chorus | Scanner rate and V1–V3 depths | Parameters | C3 on a sustained chord, each setting |
@@ -136,16 +138,38 @@ recorded here before it becomes a default.
 ## 6. The Leslie as an effect
 
 RFC 0016 and the `oscairn/sst-effects` plan list setBfree's rotary (`b_whirl`) as the
-candidate for a rotary speaker. setBfree already ships it as a separate LV2 effect
-(`b_whirl/lv2.c`). The way to offer it to Oscairn, without building it in the effects fork:
+candidate for a rotary speaker. Built in session 2 as a second CLAP plugin in `setbfree.clap`:
 
-- In this fork, a second CLAP plugin in the same bundle, "Oscairn Rotary"
-  (`org.oscairn.rotary`), wrapping `whirl.c` (and optionally the overdrive preamp), with
-  the Leslie parameters of the organ under the same names, and `oscairn.effect-contexts`
-  (each context owns one whirl) and `clap.tail`.
-- The effects suite then refers to it as an external plugin, or vendors `b_whirl` under
-  GPL-2.0-or-later (the sst-effects plan already notes this makes that build GPL-3.0).
-- Not built in this round unless time allows; recorded in section 10.
+- **"setBfree Leslie"**, `org.oscairn.setbfree.leslie` (`oscairn/leslie.cpp`), wrapping `whirl.c`
+  through the engine glue's rotor (`sbf_rotor_*` in `oscairn/engine.c`). Stereo in (summed into
+  the cabinet), stereo out (horn and drum on two microphones), a MIDI note port for the mod
+  wheel (≥ 64 fast, below slow, on crossing) and the sustain pedal (each press toggles slow and
+  fast), both reported as parameter changes.
+- Its parameters are the organ's Leslie parameters, the same names, ranges, modules
+  (`Leslie`, `Leslie/Rotors`, `Leslie/Cabinet`, `Leslie/Filters`) and value text, but the
+  organ's on/off switch (the host bypasses an effect): 31 parameters, Leslie speed first. Speed
+  is live; the others build a new rotor on the main thread, which takes over the old one's
+  rotor angles and speeds and is crossfaded in over 10 ms.
+- `oscairn.effect-contexts`: up to 16 contexts on one engine (one rate), each with its own rotor,
+  parameters and state; contexts outlive the interface they came from. `resources` reports the
+  rotors held and `tail_active`. `clap.tail` is 50 ms (measured: the output dies away 16–22 ms
+  after the input), and the effect returns `CLAP_PROCESS_SLEEP` once the input has been silent
+  that long. `oscairn.memory` declares a rotor (1.1 MB) per context; `oscairn.ui` puts the speed
+  first, as buttons. State is text (`setbfree-leslie-1` and every value, `%.17g`, C locale).
+- Real-time safe (allocation guard), any block size renders the same (`whirlRamp`, section 11),
+  rates 8–384 kHz (above 384 kHz the 2,048-sample delay lines are too short for the largest
+  cabinet).
+
+**How the effects suite can use it** (RFC 0016's Rotary Speaker types; `oscairn/sst-effects` is
+not touched here): either (a) as an external plugin, the suite's Rotary Speaker slot naming
+`org.oscairn.setbfree.leslie` and passing its parameters through by name, which keeps the suite
+free of GPL code and gets effect contexts and memory declarations for free; or (b) by vendoring
+`b_whirl/whirl.c`, `whirl.h`, `eqcomp.c` and the glue's `sbf_rotor_*` (GPL-2.0-or-later, which
+makes that build GPL-3.0, as the sst-effects plan already notes), calling
+`sbf_rotor_create(rate, "whirl.*=..." lines)`, `sbf_rotor_speed`, `sbf_rotor_follow` on a
+rebuild and `sbf_rotor_process` per block. The parameter table to mirror is the organ's
+`Leslie*` modules in `oscairn/params.h`. Either way the suite's types (slow, fast, brake
+positions, cabinet sizes) map onto these parameters as presets.
 
 ## 7. Upstreamability
 
@@ -170,14 +194,22 @@ with its change undone, no gate loosened.
 
 ## 9. Decisions for Jacob to confirm
 
+Decided by Jacob (2026-11-02) are marked **decided**.
+
 1. **Licence:** keep GPL-2.0-or-later for the fork and the plugin; new files under the same.
-2. **Name and ID:** "Oscairn Organ", `org.oscairn.organ`, vendor "Oscairn".
+2. **Name and ID — decided:** keep setBfree's name. The organ is "setBfree",
+   `org.oscairn.setbfree` (in Oscairn's own namespace, not another author's that upstream might
+   claim); the effect is "setBfree Leslie", `org.oscairn.setbfree.leslie`; the bundle is
+   `setbfree.clap`; the programs' preset provider is `org.oscairn.setbfree.programs`. Vendor
+   "Oscairn" (to confirm). The organ's state keeps its version line `oscairn-organ-1`, so states
+   saved before the rename load.
 3. **One engine per sound context:** each prepared sound is a whole organ with its own
    Leslie and reverb (its memory is measured in M1). Held keys of the old sound keep their
    Leslie spinning; the alternative, one Leslie shared by all sounds, would break the
    held-notes-keep-their-sound rule for Leslie settings.
-4. **Pitch bend is ignored** (organs do not bend). Transpose is a parameter (±48 semitones), as
-   are the split regions' transposes.
+4. **Pitch bend is ignored — decided** (organs do not bend). **Transpose — decided:** a
+   parameter of ±127 semitones (Jacob's no-limit rule; setBfree's own range), as are the three
+   split transposes; values saved at ±48 or less mean the same.
 5. **Mod wheel switches the Leslie** (≥ 64 fast, below slow, on crossing), like a
    half-moon switch; **sustain pedal**: a parameter, default "Leslie toggle" as setBfree
    does, or "Hold notes".
@@ -191,7 +223,25 @@ with its change undone, no gate loosened.
 9. **Configuration parameters rebuild the engine** (44–126 ms on the main thread, then a
    10 ms crossfade that restarts the reverb tail and Leslie rotors). Alternatives: make more of
    them live with small engine hooks, or share the tonewheel tables between engines.
-10. **Key-click rate dependence** (section 11): accept for now, or fix in the tone generator.
+10. **Key click — decided: fix it in the tone generator.** The attack (with its click) and the
+    release are defined in time: 2.9 ms (one fragment at 44.1 kHz) at every rate, the same
+    shapes. Done in session 2 as the default (`osc.envelope.rate=44100`), since it is
+    bit-identical to upstream at 44.1 kHz; `osc.envelope.rate=0` gives upstream's one fragment at
+    every rate (the stock gate uses it at 48 and 96 kHz). A choke with other keys held fades over
+    that release, 2.9 ms at every rate.
+11. **The Leslie effect — decided: build it** in this fork (section 6).
+12. **The Leslie's horn is brighter at high rates** (section 11, measured: +1.9 dB at 3 kHz at
+    88.2 kHz, +2.6 dB at 192 kHz, against 48 kHz). Its directivity filters and reflection
+    filters work on neighbouring samples. Tried (not committed): reading their history every
+    2nd sample at 88.2/96 kHz and every 4th at 176.4/192 kHz brings it within 0.7 dB; the rest is
+    the Doppler lines' linear interpolation. Fix in `whirl.c` behind a reference rate like
+    `osc.envelope.rate` (bit-identical at 44.1/48 kHz), or accept?
+13. **Leslie geometry at 176.4/192 kHz:** the delay lines are 2,048 samples, so a mic distance
+    plus twice a rotor's radius beyond about 170 cm overruns them at 192 kHz (garbage echoes),
+    in the organ and the effect. Making them longer changes every rate's output in the last bits
+    (the stock gate). Clamp the cabinet at high rates, or narrow the ranges?
+14. **The Leslie effect has no dry/wet control** (a rotary speaker is all wet; the host's mix
+    or a send does the rest). Add one with the `mix` role?
 
 ## 10. Progress
 
@@ -253,7 +303,7 @@ loud for ~20 ms after initialisation: a candidate upstream fix to `initToneGener
 | 14 | Done | `sleep` |
 | 15 | Not offered (instrument) | — |
 | 16 | Not applicable | — |
-| 17 | Done for pitch, vibrato, percussion decay, Leslie speed; **not** for key click (section 11) | `rates` |
+| 17 | Done for pitch, vibrato, percussion decay, Leslie speed (session 1) and key click and release (session 2) | `rates`, `click`, `choke` |
 | 18 | Done, see below | — |
 | 19 | Done | `performance` |
 
@@ -299,9 +349,99 @@ it is "already up to date"; upstream's `make` builds in CI.
 4. `oscairn-plugin-check` could say which parameters a "differs" render depends on (time-based
    state like a Leslie makes small differences normal).
 
-### Leslie as an effect
+### Session 2 (2026-11-02): key click, hook, transpose, names, the Leslie effect
 
-Not built (section 6 is the design). Nothing in the effects fork was touched.
+Jacob's decisions are in section 9 (2, 4, 10, 11). Oscairn read at `a337c13` (synced with
+GitHub `jbschooley/oscairn` main); its SDK headers re-vendored unchanged from that commit,
+`effect-contexts.h` added.
+
+**Engine changes** (continuing session 1's list):
+
+7. `osc.envelope.rate` (default 44100): a key's attack and release take the same time at every
+   rate; bit-identical at 44.1 kHz; 0 gives upstream's one fragment at every rate.
+8. `whirlRamp()` and `rampByCaller`: the Leslie's speed update as a function the caller may
+   call itself; the organ and upstream's front ends unchanged (stock gate identical).
+
+**Key click and release defined in time** (engine change 7, section 11). The tone generator
+makes its envelope tables as at `osc.envelope.rate` (44100 by default), where they take one
+fragment, and stretches them (linear interpolation) to the same time at the running rate; an
+attack or release can take several fragments, and one cut short by the next key change starts
+from the gain it has reached. With the tone generator's own random numbers the envelopes are
+seeded on their own, so the clicks are the same at every rate. At 44.1 kHz nothing changes:
+the stock gate is bit-identical there as it is, and at 48/96 kHz with `osc.envelope.rate=0`
+(both checked, 6 of 6 identical). Measured by `click` (one key, 8' only, no leakage, the gain
+from the engine's renders):
+
+| rate | attack (this key's click) | release | shape against 44.1 kHz | before: attack, release (one fragment) |
+| --- | --- | --- | --- | --- |
+| 44.1 kHz | 1.451 ms | 2.880 ms | identical | 1.451, 2.880 ms |
+| 48 kHz | 1.458 ms | 2.875 ms | < 0.00001 | 2.604, 2.646 ms |
+| 88.2 kHz | 1.440 ms | 2.880 ms | < 0.00001 | 0.941, 1.440 ms |
+| 96 kHz | 1.448 ms | 2.875 ms | < 0.00001 | 1.333, 1.323 ms |
+| 192 kHz | 1.443 ms | 2.875 ms | < 0.00001 | 0.453, 0.661 ms |
+
+(The attack is where this key's random click settles; the table spans 2.9 ms. Before, the
+clicks also differed per rate, being drawn after the rate-dependent wave noise.) At 192 kHz keys
+let go during their attack and pressed again during their release step no more than a held
+tone does. The plugin's `NOTE_END` waits for the whole release; a choked key is released at the
+choke, so with another key of its sound held it fades over 2.86–2.88 ms at every rate, silent
+3.2–5.3 ms after the choke (`choke`, five rates; before: 1.43 ms at 88.2 kHz, 0.66 ms at 192 kHz,
+and only after the 3 ms).
+
+**`voiceFinished`** (the SDK hook's first user): the organ lets a voice's key go there, and no
+longer looks for ended voices' keys every render or clears key counts in `silence()`. `voices`
+checks it fires once each on release, choke, steal and reset (a test-only count,
+`organ::voicesFinished`) and that the key goes up each time: a stolen C4 falls from 0.0119 to
+0.0001 at its frequency; after a reset, a key held 191 times sounds again when played. The tail
+pins are forgotten in `snapshotLoading(true)` and taken back in `snapshotLoading(false)` when
+the state is refused; `state` loads a refused state over a ringing tail (the tail rings on and
+its sound can be discarded once quiet). Both fail with their change undone.
+
+**Transpose** ±127 for Transpose and the three split transposes (`transpose`: C4 from 60
+semitones away both ways; ±127 with the split transposes adding to ±254, silent on every manual,
+no sanitizer findings).
+
+**Names:** "setBfree" `org.oscairn.setbfree`, `setbfree.clap`; "setBfree Leslie"
+`org.oscairn.setbfree.leslie`.
+
+**setBfree Leslie** (section 6), with `whirlRamp` (engine change 8). Its checklist:
+
+| Item | Status | Test |
+| --- | --- | --- |
+| Builds in the bundle, factory lists both | Done | `leslie-metadata`; `kick-clap-scan` lists both |
+| Parameters: the organ's Leslie set, metadata, value text, hints | Done: 31 | `leslie-metadata` |
+| Effect contexts | Done: 16 per engine | `leslie-contexts` |
+| Tail, sleep | Done: 50 ms | `leslie-tail` (dies away in 22 ms at 44.1 kHz, 16 ms at 192 kHz) |
+| `oscairn.memory` | Done: 1.10 MB declared, 1.005 MB allocated | `leslie-memory` |
+| Speed from the mod wheel and sustain pedal, reported | Done | `leslie-speed` |
+| State | Done: text | `leslie-state` |
+| Real-time safe | Done | `leslie-realtime` (0 allocations), `leslie-threads` (TSan) |
+| Same at every rate | Speed and level yes; the horn's highs no (section 11) | `leslie-rates`: horn 422.4–423.6 RPM, 300 Hz within 0.7 % |
+| Any block size the same | Done | `leslie-determinism` (37 vs 512 frames: identical) |
+| Rebuild crossfade, rotors keep turning | Done | `leslie-rebuild` |
+| Oscairn host check | PASSED, engine and worker | below |
+
+**Oscairn host tests** (Oscairn `a337c13` built in `forks/oscairn-build-organ`, Release, macOS
+arm64; plugin from `04ca73e`): `kick-clap-scan` lists both plugins. `oscairn-plugin-check
+setbfree.clap org.oscairn.setbfree synth --param 3=2` and `... org.oscairn.setbfree.leslie effect
+--param 1=2` PASSED in the engine and with `OSCAIRN_PLUGIN_WORKER=…/oscairn-plugin-worker`. The
+organ's reopened render differs by rms 0.00017 (its Leslie had turned; the check says this is not
+a failure); the effect's is identical.
+
+**Listening** (`forks/measurements/listen-organ/`, all files rendered again): section 10 at five
+rates, 11 the click at each rate as now and as upstream's (`-one-fragment`), 12 the Leslie effect
+on the dry organ (48 and 192 kHz) and on a sawtooth chord.
+
+**For the Oscairn session:**
+
+1. `sound-contexts-plugin.hpp` calls `snapshotLoading(true)` before it parses the state, so an
+   instrument that forgets its own pins there, as the header says, loses them (and leaves its
+   contexts pinned for good) when the state is then refused: `snapshotLoading(false)` comes
+   without `restored()`. The organ takes them back when `restored()` was not called. Call
+   `snapshotLoading(true)` after parsing, or tell `snapshotLoading(false)` whether the load
+   happened. `voiceFinished` itself works on release, choke, steal and reset.
+2. (From session 1, still open) preparing a context from a CLAP preset; `oscairn-plugin-check`
+   naming which state makes a reopened render differ.
 
 ## 11. Known differences
 
@@ -310,6 +450,11 @@ From upstream setBfree, and what is unfinished.
 - Key-click randomness comes from a per-instance generator, not libc `rand()`: the clicks are
   equally random but not the same ones as an upstream build's.
 - Vibrato depths are the same at every rate (scaled to 48 kHz); upstream's depend on the rate.
+- A key's attack and release take 2.9 ms at every rate (`osc.envelope.rate`, default 44100);
+  upstream's take one 128-sample fragment. Identical at 44.1 kHz. The click envelopes are seeded
+  on their own (with the fork's random numbers), so they are the same at every rate.
+- `whirlRamp`: the Leslie's speeds can be moved by the caller once per fixed length (the effect
+  does, per 128 samples); the organ and upstream's front ends are unchanged.
 - A new engine starts at the swell level instead of gliding down from 14× (upstream bug).
 - The overdrive prints nothing.
 - Live controls run at setBfree's 7-bit resolution, so their defaults are the nearest steps:
@@ -323,14 +468,19 @@ From upstream setBfree, and what is unfinished.
 - Each sound has its own Leslie and reverb (decision 3).
 - Presets: programs that set no drawbars (modifiers like "Percussion ON") and random-drawbar
   programs are not listed; per-channel transposes in programs are ignored.
-- **Unfinished: key click and key release are one 128-sample fragment** (2.9 ms at 44.1 kHz,
-  0.67 ms at 192 kHz), so the click is shorter and sharper at high rates (measured: 2.5, 2.4,
-  1.2, 0.64 ms at 44.1, 48, 96, 192 kHz). Fix: envelopes of a fixed time spanning fragments in
-  the tone generator, or running the engine at 48 kHz with resampling. Also a choke at 88.2 kHz
-  and above is shorter than 2 ms when other keys of the sound are held.
-- Unfinished: the Leslie effect plugin (section 6); sound-quality verdicts and new presets;
-  the device build; signing.
+- **The Leslie's horn is brighter at high rates** (organ and effect): with the Leslie stopped, a
+  3 kHz tone comes out at 0.178, 0.189, 0.235, 0.238, 0.255 at 44.1, 48, 88.2, 96, 192 kHz
+  (-0.5, 0, +1.9, +2.0, +2.6 dB against 48 kHz); 300 Hz is within 0.6 %. Upstream's whirl
+  filters work on neighbouring samples (decision 12).
+- At 176.4/192 kHz a cabinet with mic distance plus twice a rotor's radius beyond about 170 cm
+  overruns the Leslie's 2,048-sample delay lines (decision 13). The effect refuses rates above
+  384 kHz.
+- The Leslie effect: speed changes made while it sleeps (input silent past its tail) ramp when
+  the input comes back; a rebuilt rotor keeps the rotors' angles and speeds but starts with
+  empty delay lines (crossfaded over 10 ms).
+- Unfinished: sound-quality verdicts and new presets; the device build; signing.
 - Event timing is setBfree's: a key or control change takes effect at the next 128-sample
-  fragment (up to 2.7 ms at 48 kHz), the same in every block size.
+  fragment (up to 2.7 ms at 48 kHz), the same in every block size. So a choke with other keys
+  held is silent up to 2.9 ms + 2.9 ms after it at 44.1 kHz (measured up to 5.3 ms).
 - While a sound is silent it is not rendered, so a Leslie speed change made in silence ramps
   when the next note starts.
