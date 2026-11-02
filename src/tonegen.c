@@ -3585,6 +3585,7 @@ allocTonegen (double rate)
 	t->randState   = 1;
 	initValues (t);
 	resetVibrato (t);
+	t->inst_vibrato.SampleRateD = rate; /* scanner.hz is read before initVibrato */
 	return (t);
 }
 
