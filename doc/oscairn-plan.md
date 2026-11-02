@@ -196,7 +196,7 @@ with its change undone, no gate loosened.
 
 Decided by Jacob (2026-11-02) are marked **decided**.
 
-1. **Licence:** keep GPL-2.0-or-later for the fork and the plugin; new files under the same.
+1. **Licence — decided:** keep GPL-2.0-or-later for the fork and the plugins; new files under the same.
 2. **Name and ID — decided:** keep setBfree's name. The organ is "setBfree",
    `org.oscairn.setbfree` (in Oscairn's own namespace, not another author's that upstream might
    claim); the effect is "setBfree Leslie", `org.oscairn.setbfree.leslie`; the bundle is
@@ -215,14 +215,14 @@ Decided by Jacob (2026-11-02) are marked **decided**.
    does, or "Hold notes".
 6. **CC 11 expression is the swell pedal** (it also drives the overdrive, as on the real
    organ), live per channel, not saved as a parameter.
-7. **Keyboard mapping:** MIDI channel 1 upper, 2 lower, 3 pedals as setBfree; plus split
+7. **Keyboard mapping — decided:** MIDI channel 1 upper, 2 lower, 3 pedals as setBfree; plus split
    points so one keyboard can play lower and pedals.
-8. **Defaults:** setBfree's defaults until Jacob picks by ear: upper 88 6000 000, lower and
+8. **Defaults — decided for now:** setBfree's defaults until Jacob picks the default sound by
+   ear from the listening folder: upper 88 6000 000, lower and
    pedal drawbars all in (silent), Leslie slow, vibrato C3 but routed to neither manual,
    percussion off (third, slow, normal), overdrive off, reverb 0.1.
-9. **Configuration parameters rebuild the engine** (44–126 ms on the main thread, then a
-   10 ms crossfade that restarts the reverb tail and Leslie rotors). Alternatives: make more of
-   them live with small engine hooks, or share the tonewheel tables between engines.
+9. **Configuration parameters rebuild the engine — decided** (44–126 ms on the main thread,
+   then a 10 ms crossfade that restarts the reverb tail and Leslie rotors).
 10. **Key click — decided: fix it in the tone generator.** The attack (with its click) and the
     release are defined in time: 2.9 ms (one fragment at 44.1 kHz) at every rate, the same
     shapes. Done in session 2 as the default (`osc.envelope.rate=44100`), since it is
@@ -242,6 +242,9 @@ Decided by Jacob (2026-11-02) are marked **decided**.
     (the stock gate). Clamp the cabinet at high rates, or narrow the ranges?
 14. **The Leslie effect has no dry/wet control** (a rotary speaker is all wet; the host's mix
     or a send does the rest). Add one with the `mix` role?
+15. **Versions — decided:** the plugin's version goes up whenever its sound or memory figures
+    change (Oscairn measures CPU and memory per version). setBfree 0.2.0 (session 2: click,
+    release, choke, presets as sounds); setBfree Leslie 0.1.0.
 
 ## 10. Progress
 
@@ -428,6 +431,17 @@ setbfree.clap org.oscairn.setbfree synth --param 3=2` and `... org.oscairn.setbf
 organ's reopened render differs by rms 0.00017 (its Leslie had turned; the check says this is not
 a failure); the effect's is identical.
 
+**Presets as prepared sounds** (Oscairn `3b58efe`, `oscairn.sound-contexts/draft-5`): the SDK
+headers re-vendored at `3b58efe`; preset discovery through the SDK's factory (programs inside
+the plugin, location "Factory", load keys the MIDI program numbers 0–25 and 81–109, not 0–54,
+so a key keeps its program when the list changes); `readPreset` serves `prepare_preset` and
+preset-load. The helper's `preparePreset` publishes the sound without an engine, so the organ
+wraps it and builds the engine as `prepare` does. `presets`: exactly 55 listed; a sound
+prepared from each sounds bit-identical to the program loaded with preset-load; its saved state
+holds patch values, not the key, and reopens sounding the same. This answers session 1's
+request 3. `oscairn-plugin-check` (Oscairn `84d58fc`) PASSED again on both plugins from
+`85810d8`, engine and worker; it does not exercise `prepare_preset`.
+
 **Listening** (`forks/measurements/listen-organ/`, all files rendered again): section 10 at five
 rates, 11 the click at each rate as now and as upstream's (`-one-fragment`), 12 the Leslie effect
 on the dry organ (48 and 192 kHz) and on a sawtooth chord.
@@ -440,8 +454,9 @@ on the dry organ (48 and 192 kHz) and on a sawtooth chord.
    without `restored()`. The organ takes them back when `restored()` was not called. Call
    `snapshotLoading(true)` after parsing, or tell `snapshotLoading(false)` whether the load
    happened. `voiceFinished` itself works on release, choke, steal and reset.
-2. (From session 1, still open) preparing a context from a CLAP preset; `oscairn-plugin-check`
-   naming which state makes a reopened render differ.
+2. `preparePreset` publishes a context with only its patch; an instrument whose sounds need
+   resources built in `prepare` (the organ's engines) must wrap it. A hook (say
+   `prepared(Context&)`, or `readPreset` getting the context) would make that direct.
 
 ## 11. Known differences
 
