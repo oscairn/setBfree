@@ -77,6 +77,9 @@ void sbf_render (sbf_engine* e, float* left, float* right);
 /* Keys currently down in the tone generator. */
 int sbf_keys_down (const sbf_engine* e);
 
+/* Frames a key's attack or release takes, in whole fragments, from the fragment it starts in. */
+int sbf_release_frames (const sbf_engine* e);
+
 #ifdef __cplusplus
 }
 #endif

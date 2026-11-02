@@ -373,9 +373,9 @@ namespace
             v.released = true;
             const auto vi = uint32_t(&v - voices.data());
             if(keyDown[vi]) { keyDown[vi] = false; keyChange(v.context, v.channel, v.key, false); }
-            // The key-off reaches the tone generator with its next fragment and fades over that one.
+            // The key-off reaches the tone generator with its next fragment and fades from there.
             const auto& s = slots[v.context];
-            v.releaseLeft = (s.engine ? F - s.cur.pos : 0) + F;
+            v.releaseLeft = s.engine ? F - s.cur.pos + uint32_t(sbf_release_frames(s.engine)) : F;
         }
         void applyMidi(const clap_event_midi_t& e)
         {
@@ -471,6 +471,8 @@ namespace
             std::fill(outL + from, outL + to, 0.f);
             std::fill(outR + from, outR + to, 0.f);
             const uint32_t n = to - from;
+            // A choked key lets go at once: where other keys hold its sound up, its release is the fade.
+            for(auto& v : voices) if(v.active && v.chokeLength && !v.released) release(v);
             for(uint32_t i = 0; i < contextCapacity; ++i)
             {
                 auto& s = slots[i];

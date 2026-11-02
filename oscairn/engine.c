@@ -286,3 +286,13 @@ sbf_keys_down (const sbf_engine* e)
 		n += e->inst.synth->activeKeys[k] != 0;
 	return n;
 }
+
+int
+sbf_release_frames (const sbf_engine* e)
+{
+#ifdef SETBFREE_STOCK
+	return SBF_FRAGMENT;
+#else
+	return e->inst.synth->envSpan;
+#endif
+}

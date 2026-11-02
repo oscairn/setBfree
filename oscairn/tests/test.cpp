@@ -302,10 +302,11 @@ namespace
         CHECK(rms(r.left, r.left.size() - 4800, r.left.size()) < 1e-4);
     }
 
-    // A host choke fades the only key of a sound in 2-5 ms; per-note volume scales it.
+    // A host choke fades the only key of a sound in 2-5 ms; per-note volume scales it. With
+    // another key of the sound held, the choked key's own release is its fade: 2-5 ms too.
     void chokeAndVolume()
     {
-        for(double rate : {44100.0, 48000.0})
+        for(double rate : {44100.0, 48000.0, 88200.0, 96000.0, 192000.0})
         {
             Instance o(rate);
             o.at(0).param(param("Leslie"), 0).param(param("Reverb"), 0);
@@ -313,10 +314,11 @@ namespace
             o.service();
             o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 69, 7);
             auto r = o.render(uint32_t(rate / 2), 128);
-            const double before = rms(r.left, r.left.size() - 4096, r.left.size());
+            const size_t window = size_t(rate / 10);
+            const double before = rms(r.left, r.left.size() - window, r.left.size());
             o.at(0).expression(CLAP_NOTE_EXPRESSION_VOLUME, 0, 69, 7, 0.5);
             r = o.render(uint32_t(rate / 4), 128);
-            const double half = rms(r.left, r.left.size() - 4096, r.left.size());
+            const double half = rms(r.left, r.left.size() - window, r.left.size());
             CHECK(std::fabs(half / before - 0.5) < 0.01);
             o.at(100).note(CLAP_EVENT_NOTE_CHOKE, 0, 69, 7);
             r = o.render(uint32_t(rate / 10), 128);
@@ -332,6 +334,29 @@ namespace
             for(size_t i = 100; i < 100 + twoMs; ++i) fadeStep = std::max(fadeStep, std::fabs(double(r.left[i])));
             CHECK(fadeStep > 0.2 * peak); // not cut: still sounding during the first 2 ms
             CHECK(noteEnds(r.events, 7) == 1);
+
+            // A silent lower-manual key (D#3: no tonewheel in common with A4) holds the sound up;
+            // the choked key's gain is a / held.
+            Instance a(rate), held(rate);
+            for(auto* i : {&a, &held})
+            {
+                i->at(0).param(param("Leslie"), 0).param(param("Reverb"), 0);
+                i->render(256, 256);
+                i->service();
+                i->at(0).note(CLAP_EVENT_NOTE_ON, 1, 51, 1).note(CLAP_EVENT_NOTE_ON, 0, 69, 2);
+            }
+            const uint32_t at = uint32_t(rate / 2) + 77;
+            a.at(at).note(CLAP_EVENT_NOTE_CHOKE, 0, 69, 2);
+            const auto x = a.render(at + uint32_t(rate / 50), 128).left, y = held.render(at + uint32_t(rate / 50), 128).left;
+            double top = 0;
+            for(size_t i = at - 4096; i < at; ++i) top = std::max(top, std::fabs(double(y[i])));
+            size_t onset = at, end = 0;
+            while(onset < x.size() && x[onset] == y[onset]) ++onset;
+            for(size_t i = onset; i < x.size() && !end; ++i)
+                if(std::fabs(double(y[i])) > 0.05 * top && std::fabs(double(x[i]) / y[i]) < 0.01) end = i;
+            const double fade = (double(end) - double(onset)) / rate * 1000, total = (double(end) - at) / rate * 1000;
+            std::printf("  %.0f Hz: choked with another key held, fades over %.2f ms, silent %.2f ms after the choke\n", rate, fade, total);
+            CHECK(end > onset && fade >= 2 && fade <= 5 && total <= 6);
         }
     }
 
