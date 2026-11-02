@@ -30,6 +30,8 @@
 #include "engine.h"
 #include "params.h"
 
+#include <clap/ext/preset-load.h>
+#include <clap/factory/preset-discovery.h>
 #include <oscairn-clap/memory.h>
 #include <oscairn-clap/sound-contexts-plugin.hpp>
 #include <oscairn-clap/ui.h>
@@ -126,6 +128,29 @@ namespace
         return 1750000 + 750000 * uint64_t(std::ceil(rate / 48000));
     }
 
+    // A setBfree program as a whole sound: defaults, then what the program sets.
+    Values programValues(const sbf_program& g)
+    {
+        Values v = defaults;
+        auto set = [&](const char* name, double value) { if(value >= 0) v[index(name)] = value; };
+        for(int i = 0; i < 9; ++i)
+        {
+            v[index("Upper 16'") + i] = g.upper[i];
+            if(g.lower[i] >= 0) v[index("Lower 16'") + i] = g.lower[i];
+            if(g.pedal[i] >= 0) v[index("Pedal 16'") + i] = g.pedal[i];
+        }
+        set("Vibrato", g.vibrato); set("Vibrato upper", g.vibratoUpper); set("Vibrato lower", g.vibratoLower);
+        set("Percussion", g.percussion); set("Percussion volume", g.percussionSoft);
+        set("Percussion decay", g.percussionFast); set("Percussion harmonic", g.percussionSecond);
+        set("Overdrive", g.overdrive); set("Leslie speed", g.leslie);
+        if(g.reverb >= 0) v[index("Reverb")] = std::round(std::clamp(g.reverb, 0.0, 1.0) * 127) / 127; // its 7-bit steps
+        set("Pedal split", g.pedalSplit); set("Lower split", g.lowerSplit);
+        auto shift = [&](const char* name, int value) { if(value != -1) v[index(name)] = std::clamp(value, -48, 48); };
+        shift("Transpose", g.transpose); shift("Pedal split transpose", g.pedalTranspose);
+        shift("Lower split transpose", g.lowerTranspose); shift("Upper split transpose", g.upperTranspose);
+        return v;
+    }
+
     struct Fragment
     {
         float l[F]{}, r[F]{};
@@ -194,6 +219,8 @@ namespace
         std::array<bool, voiceCapacity> keyDown{}; // per voice index: its key is down in an engine
         std::array<uint16_t, voiceCapacity> keyOf{}; // slot << 11 | channel << 7 | key
         bool wantCallback = false;
+        bool active = false; // main thread
+        std::atomic<Values*> presetIn{nullptr}, presetDone{nullptr}; // a loaded preset, main → audio → main
 
         Organ()
         {
@@ -207,6 +234,8 @@ namespace
         }
         ~Organ()
         {
+            delete presetIn.load();
+            delete presetDone.load();
             for(auto& s : slots) freeEngines(s);
             while(auto* e = retired.pop()) sbf_destroy(e);
         }
@@ -303,6 +332,25 @@ namespace
         {
             Base::applySelections(out);
             adoptPending();
+            if(presetDone.load(std::memory_order_acquire)) return; // the last one is not freed yet
+            if(auto* v = presetIn.exchange(nullptr, std::memory_order_acquire))
+            {
+                for(uint32_t i = 0; i < paramCount; ++i) setFromPerformance(-1, i, (*v)[i]);
+                presetDone.store(v, std::memory_order_release);
+                wantCallback = true;
+            }
+        }
+        // Main thread: a preset's values for the sound(s) selected now, as a host change on every channel.
+        void loadPreset(const Values& v)
+        {
+            if(!active)
+            {
+                for(uint32_t i = 0; i < paramCount; ++i) setParam(i, v[i], -1);
+                return;
+            }
+            delete presetIn.exchange(new Values(v), std::memory_order_acq_rel);
+            if(host)
+                if(auto* hp = static_cast<const clap_host_params_t*>(host->get_extension(host, CLAP_EXT_PARAMS))) hp->request_flush(host);
         }
 
         // Helper hooks.
@@ -365,6 +413,7 @@ namespace
         void setFromPerformance(int ch, uint32_t i, double value)
         {
             setParam(i, value, int16_t(ch));
+            if(ch < 0) values[i] = std::clamp(value, params[i].min, params[i].max);
             if(!output) return;
             clap_event_param_value_t ev{};
             ev.header = {sizeof(ev), eventTime, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
@@ -499,6 +548,7 @@ namespace
         // Main thread: frees retired engines and builds the ones parameter changes asked for.
         void service()
         {
+            delete presetDone.exchange(nullptr, std::memory_order_acq_rel);
             while(auto* e = retired.pop()) sbf_destroy(e);
             if(rate <= 0) return;
             for(uint32_t i = 0; i < contextCapacity; ++i)
@@ -745,6 +795,20 @@ namespace
     }
     const oscairn_plugin_memory_t memoryExt = {memoryEstimate, memoryCurrent};
 
+    // Presets: setBfree's built-in programs that set drawbars, keyed by MIDI program number.
+    const clap_plugin_preset_load_t presetLoadExt = {[](const clap_plugin_t* p, uint32_t kind, const char* location, const char* key) {
+        auto& s = self(p);
+        char* end = nullptr;
+        const long pc = key ? std::strtol(key, &end, 10) : -1;
+        sbf_program g;
+        const bool ok = kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN && end && end != key && !*end && pc >= 0 && pc < 128 && sbf_program_get(int(pc), &g);
+        auto* hp = s.host ? static_cast<const clap_host_preset_load_t*>(s.host->get_extension(s.host, CLAP_EXT_PRESET_LOAD)) : nullptr;
+        if(!ok) { if(hp) hp->on_error(s.host, kind, location, key, 0, "no such program"); return false; }
+        s.loadPreset(programValues(g));
+        if(hp) hp->loaded(s.host, kind, location, key);
+        return true;
+    }};
+
     clap_process_status process(const clap_plugin_t* p, const clap_process_t* proc)
     {
         auto& s = self(p);
@@ -785,9 +849,16 @@ const clap_plugin_t* create(const clap_host_t* host)
         s.levelGlide = 1.0 - std::exp(-1.0 / (rate * 0.005));
         s.resetVoices();
         s.rebuildAll();
+        s.active = true;
         return true;
     };
-    s->plugin.deactivate = [](const clap_plugin_t* p) { self(p).resetVoices(); self(p).silence(); };
+    s->plugin.deactivate = [](const clap_plugin_t* p) {
+        auto& s = self(p);
+        s.active = false;
+        s.resetVoices();
+        s.silence();
+        if(auto* v = s.presetIn.exchange(nullptr)) { for(uint32_t i = 0; i < paramCount; ++i) s.setParam(i, (*v)[i], -1); delete v; }
+    };
     s->plugin.start_processing = [](const clap_plugin_t*) { return true; };
     s->plugin.stop_processing = [](const clap_plugin_t*) {};
     s->plugin.reset = [](const clap_plugin_t* p) { self(p).resetVoices(); self(p).silence(); };
@@ -800,6 +871,7 @@ const clap_plugin_t* create(const clap_host_t* host)
         if(!std::strcmp(id, CLAP_EXT_STATE)) return &stateExt;
         if(!std::strcmp(id, OSCAIRN_EXT_UI)) return &uiExt;
         if(!std::strcmp(id, OSCAIRN_EXT_MEMORY)) return &memoryExt;
+        if(!std::strcmp(id, CLAP_EXT_PRESET_LOAD)) return &presetLoadExt;
         return nullptr;
     };
     s->plugin.on_main_thread = [](const clap_plugin_t* p) { self(p).service(); };
@@ -815,11 +887,48 @@ namespace
         return id && !std::strcmp(id, descriptor.id) ? create(host) : nullptr;
     }
     const clap_plugin_factory_t pluginFactory = {factoryCount, factoryDescriptor, factoryCreate};
+
+    const clap_preset_discovery_provider_descriptor_t providerDescriptor = {CLAP_VERSION_INIT, "org.oscairn.organ.programs", "setBfree programs", "Oscairn"};
+    const clap_preset_discovery_provider_t* createProvider(const clap_preset_discovery_indexer_t* indexer)
+    {
+        auto* provider = new clap_preset_discovery_provider_t{};
+        provider->desc = &providerDescriptor;
+        provider->provider_data = const_cast<clap_preset_discovery_indexer_t*>(indexer);
+        provider->init = [](const clap_preset_discovery_provider_t* p) {
+            auto* indexer = static_cast<const clap_preset_discovery_indexer_t*>(p->provider_data);
+            const clap_preset_discovery_location_t location{CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT, "setBfree programs", CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr};
+            return indexer->declare_location(indexer, &location);
+        };
+        provider->destroy = [](const clap_preset_discovery_provider_t* p) { delete p; };
+        provider->get_metadata = [](const clap_preset_discovery_provider_t*, uint32_t kind, const char*, const clap_preset_discovery_metadata_receiver_t* r) {
+            if(kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN) return false;
+            const clap_universal_plugin_id_t id{"clap", descriptor.id};
+            for(int pc = 0; pc < 128; ++pc)
+            {
+                sbf_program g;
+                if(!sbf_program_get(pc, &g)) continue;
+                const auto key = std::to_string(pc);
+                if(!r->begin_preset(r, g.name, key.c_str())) break;
+                r->add_plugin_id(r, &id);
+                r->set_flags(r, CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+            }
+            return true;
+        };
+        provider->get_extension = [](const clap_preset_discovery_provider_t*, const char*) -> const void* { return nullptr; };
+        return provider;
+    }
+    const clap_preset_discovery_factory_t presetFactory = {
+        [](const clap_preset_discovery_factory_t*) -> uint32_t { return 1; },
+        [](const clap_preset_discovery_factory_t*, uint32_t i) { return i ? nullptr : &providerDescriptor; },
+        [](const clap_preset_discovery_factory_t*, const clap_preset_discovery_indexer_t* indexer, const char* id) {
+            return id && !std::strcmp(id, providerDescriptor.id) ? createProvider(indexer) : nullptr;
+        }};
 }
 
 const void* factory(const char* id)
 {
     if(!std::strcmp(id, CLAP_PLUGIN_FACTORY_ID)) return &pluginFactory;
+    if(!std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID) || !std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)) return &presetFactory;
     return nullptr;
 }
 }

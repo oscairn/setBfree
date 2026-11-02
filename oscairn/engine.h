@@ -54,6 +54,20 @@ void sbf_control (sbf_engine* e, int id, uint8_t value);
  * keys from there below lowerSplit the lower manual; 0 turns a split off. */
 void sbf_keyboard_split (sbf_engine* e, int pedalSplit, int lowerSplit);
 
+/* setBfree's built-in program (pgm/default.pgm) on MIDI program pc, 0..127. Fields the
+ * program does not set are -1. Returns 0 for unused programs, programs that set no upper
+ * drawbars (modifiers such as "Percussion ON") and programs with random drawbars. */
+typedef struct sbf_program {
+	char   name[32];
+	int    upper[9], lower[9], pedal[9]; /* drawbar settings 0..8 */
+	int    vibrato;                     /* 0..5: V1 C1 V2 C2 V3 C3 */
+	int    vibratoUpper, vibratoLower, percussion, percussionSoft, percussionFast, percussionSecond, overdrive;
+	int    leslie;                      /* 0 stop, 1 slow, 2 fast */
+	double reverb;                      /* 0..1 */
+	int    pedalSplit, lowerSplit, transpose, pedalTranspose, lowerTranspose, upperTranspose;
+} sbf_program;
+int sbf_program_get (int pc, sbf_program* out);
+
 /* Releases every key. */
 void sbf_panic (sbf_engine* e);
 

@@ -26,6 +26,7 @@
 #endif
 
 #include <locale.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,6 +38,7 @@
 #include "midi.h"
 #include "program.h"
 #include "state.h"
+#include "vibrato.h"
 
 /* cfgParser.c asks the front end for its own settings; there are none. */
 int
@@ -193,6 +195,70 @@ void
 sbf_keyboard_split (sbf_engine* e, int pedalSplit, int lowerSplit)
 {
 	setKeyboardSplitMulti (e->inst.midicfg, 3, pedalSplit, lowerSplit, 0, 0, 0);
+}
+
+/* Transpose slots of Programme.transpose (private to src/program.c). */
+enum { PGM_TRANSP = 0, PGM_CHA_UM = 4, PGM_CHA_LM = 5, PGM_CHA_PD = 6 };
+
+int
+sbf_program_get (int pc, sbf_program* out)
+{
+	struct b_programme* progs = allocProgs ();
+	int                 p     = pc + (progs ? progs->MIDIControllerPgmOffset : 0);
+	if (!progs || pc < 0 || p <= 0 || p >= MAXPROGS) {
+		freeProgs (progs);
+		return 0;
+	}
+	const Programme*   g = &progs->programmes[p];
+	const unsigned int f = g->flags[0];
+	if (!(f & FL_INUSE) || !(f & FL_DRAWBR) || (f & FL_DRWRND)) {
+		freeProgs (progs);
+		return 0;
+	}
+	memset (out, -1, sizeof (*out));
+	snprintf (out->name, sizeof (out->name), "%s", g->name);
+	for (int i = 0; i < 9; ++i) {
+		out->upper[i] = (int)g->drawbars[i];
+		if (f & FL_LOWDRW)
+			out->lower[i] = (int)g->lowerDrawbars[i];
+		if (f & FL_PDLDRW)
+			out->pedal[i] = (int)g->pedalDrawbars[i];
+	}
+	/* as installProgram () in src/program.c applies them */
+	if (f & FL_SCANNR)
+		out->vibrato = ((g->scanner & 0xf) << 1) - ((g->scanner & CHO_) ? 1 : 2);
+	if (f & FL_VCRUPR)
+		out->vibratoUpper = (g->scanner & 0x200) ? 1 : 0;
+	if (f & FL_VCRLWR)
+		out->vibratoLower = (g->scanner & 0x100) ? 1 : 0;
+	if (f & FL_PRCENA)
+		out->percussion = g->percussionEnabled ? 1 : 0;
+	if (f & FL_PRCVOL)
+		out->percussionSoft = g->percussionVolume ? 1 : 0;
+	if (f & FL_PRCSPD)
+		out->percussionFast = g->percussionSpeed ? 1 : 0;
+	if (f & FL_PRCHRM)
+		out->percussionSecond = g->percussionHarmonic ? 1 : 0;
+	if (f & FL_OVRSEL)
+		out->overdrive = g->overdriveSelect ? 1 : 0;
+	if (f & FL_ROTSPS) /* rotary.speed-preset: 0 slow, 64 stop, 127 fast */
+		out->leslie = g->rotarySpeedSelect == 0 ? 1 : g->rotarySpeedSelect == 1 ? 0 : 2;
+	if (f & FL_RVBMIX)
+		out->reverb = g->reverbMix;
+	if (f & FL_KSPLTP)
+		out->pedalSplit = g->keyboardSplitPedals;
+	if (f & FL_KSPLTL)
+		out->lowerSplit = g->keyboardSplitLower;
+	if (f & FL_TRANSP)
+		out->transpose = g->transpose[PGM_TRANSP];
+	if (f & FL_TRA_PD)
+		out->pedalTranspose = g->transpose[PGM_CHA_PD];
+	if (f & FL_TRA_LM)
+		out->lowerTranspose = g->transpose[PGM_CHA_LM];
+	if (f & FL_TRA_UM)
+		out->upperTranspose = g->transpose[PGM_CHA_UM];
+	freeProgs (progs);
+	return 1;
 }
 
 void

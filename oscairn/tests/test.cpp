@@ -21,6 +21,10 @@
 
 #include "harness.h"
 
+#include "engine.h"
+
+#include <clap/ext/preset-load.h>
+#include <clap/factory/preset-discovery.h>
 #include <oscairn-clap/memory.h>
 #include <oscairn-clap/sound-contexts.h>
 #include <oscairn-clap/ui.h>
@@ -737,7 +741,55 @@ namespace
         }
     }
 
+    // Presets: setBfree's programs are listed through preset discovery and load their drawbars.
+    void presets()
+    {
+        auto* factory = static_cast<const clap_preset_discovery_factory_t*>(organ::factory(CLAP_PRESET_DISCOVERY_FACTORY_ID));
+        CHECK(factory && factory->count(factory) == 1);
+        struct Found { std::vector<std::pair<std::string, std::string>> presets; int locations = 0; std::string pluginId; } found;
+        clap_preset_discovery_indexer_t indexer{CLAP_VERSION_INIT, "test", "", "", "", &found, nullptr,
+            [](const clap_preset_discovery_indexer_t* i, const clap_preset_discovery_location_t* l) {
+                static_cast<Found*>(i->indexer_data)->locations += l->kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN;
+                return true;
+            }, nullptr, nullptr};
+        auto* provider = factory->create(factory, &indexer, factory->get_descriptor(factory, 0)->id);
+        CHECK(provider && provider->init(provider) && found.locations == 1);
+        clap_preset_discovery_metadata_receiver_t receiver{};
+        receiver.receiver_data = &found;
+        receiver.begin_preset = [](const clap_preset_discovery_metadata_receiver_t* r, const char* name, const char* key) {
+            static_cast<Found*>(r->receiver_data)->presets.emplace_back(name, key); return true; };
+        receiver.add_plugin_id = [](const clap_preset_discovery_metadata_receiver_t* r, const clap_universal_plugin_id_t* id) {
+            static_cast<Found*>(r->receiver_data)->pluginId = id->id; };
+        receiver.set_flags = [](const clap_preset_discovery_metadata_receiver_t*, uint32_t) {};
+        CHECK(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, &receiver));
+        provider->destroy(provider);
+        std::printf("  %zu presets, the first \"%s\"\n", found.presets.size(), found.presets.empty() ? "" : found.presets[0].first.c_str());
+        CHECK(found.presets.size() >= 15 && found.pluginId == "org.oscairn.organ");
+        // Load each one, active and inactive: its drawbars become the parameters.
+        for(bool activate : {true, false})
+            for(const auto& [name, key] : found.presets)
+            {
+                Instance o(48000, activate);
+                auto* load = o.ext<clap_plugin_preset_load_t>(CLAP_EXT_PRESET_LOAD);
+                CHECK(load->from_location(o.p, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, key.c_str()));
+                if(activate) o.render(512, 512);
+                sbf_program g;
+                CHECK(sbf_program_get(std::stoi(key), &g));
+                auto* params = o.ext<clap_plugin_params_t>(CLAP_EXT_PARAMS);
+                const auto first = param("Upper 16'");
+                for(int i = 0; i < 9; ++i)
+                {
+                    double v;
+                    params->get_value(o.p, first + i, &v);
+                    if(v != g.upper[i]) { std::printf("  %s: upper drawbar %d is %g, not %d\n", name.c_str(), i, v, g.upper[i]); CHECK(false); }
+                }
+            }
+        Instance o(48000);
+        CHECK(!o.ext<clap_plugin_preset_load_t>(CLAP_EXT_PRESET_LOAD)->from_location(o.p, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "200"));
+    }
+
     const std::map<std::string, std::function<void()>> tests = {
+        {"presets", presets},
         {"memory", memory},
         {"startup", startup},
         {"rates", rates},
