@@ -60,6 +60,7 @@ struct b_vibrato {
 	double vibFqHertz;
 
 	double SampleRateD;
+	double depthRate; /* 0: the depths are in samples; else samples at this rate */
 
 	int mixedBuffers;
 	int effectEnabled;

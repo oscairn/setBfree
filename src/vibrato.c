@@ -201,9 +201,12 @@ initIncrementTables (struct b_vibrato* v)
 	double voff2;
 	double voff3;
 
-	voff1 = v->vib1OffAmp;
-	voff2 = v->vib2OffAmp;
-	voff3 = v->vib3OffAmp;
+	/* The depths are delays in samples; scaled, they mean the same time at any rate. */
+	const double scale = v->depthRate > 0 ? v->SampleRateD / v->depthRate : 1.0;
+
+	voff1 = v->vib1OffAmp * scale;
+	voff2 = v->vib2OffAmp * scale;
+	voff3 = v->vib3OffAmp * scale;
 
 	for (i = 0; i < BUF_SIZE_BYTES; i++) {
 		v->vibBuffer[i] = 0;
@@ -219,9 +222,9 @@ initIncrementTables (struct b_vibrato* v)
 
 	for (i = 0; i < INCTBL_SIZE; i++) {
 		double m           = sin ((2.0 * M_PI * i) / INCTBL_SIZE);
-		v->offset1Table[i] = (unsigned int)((1.0 + voff1 + (m * v->vib1OffAmp)) * S);
-		v->offset2Table[i] = (unsigned int)((1.0 + voff2 + (m * v->vib2OffAmp)) * S);
-		v->offset3Table[i] = (unsigned int)((1.0 + voff3 + (m * v->vib3OffAmp)) * S);
+		v->offset1Table[i] = (unsigned int)((1.0 + voff1 + (m * voff1)) * S);
+		v->offset2Table[i] = (unsigned int)((1.0 + voff2 + (m * voff2)) * S);
+		v->offset3Table[i] = (unsigned int)((1.0 + voff3 + (m * voff3)) * S);
 	}
 
 #ifdef DEBUG_DUMP_SCANNER
@@ -317,6 +320,10 @@ scannerConfig (void* t, ConfigContext* cfg)
 	                                  &d,
 	                                  4.0, 22.0)) == 1) {
 		setScannerFrequency (v, d);
+	} else if ((ack = getConfigParameter_dr ("scanner.modulation.rate",
+	                                         cfg,
+	                                         &v->depthRate,
+	                                         0.0, 768000.0)) == 1) {
 	} else if ((ack = getConfigParameter_dr ("scanner.modulation.v1",
 	                                         cfg,
 	                                         &v->vib1OffAmp,
@@ -391,6 +398,7 @@ static const ConfigDoc doc[] = {
 	{ "scanner.modulation.v1", CFG_DOUBLE, "3.0", "Amount of modulation for vibrato/chorus 1 setting", "Hz", 0, 12, .5 },
 	{ "scanner.modulation.v2", CFG_DOUBLE, "6.0", "Amount of modulation for vibrato/chorus 2 setting", "Hz", 0, 12, .5 },
 	{ "scanner.modulation.v3", CFG_DOUBLE, "9.0", "Amount of modulation for vibrato/chorus 3 setting", "Hz", 0, 12, .5 },
+	{ "scanner.modulation.rate", CFG_DOUBLE, "0", "Sample rate the modulation amounts are given for, so that the vibrato is as deep at every rate; 0: amounts are samples at the running rate", "Hz", 0, 192000, 100 },
 	DOC_SENTINEL
 };
 
