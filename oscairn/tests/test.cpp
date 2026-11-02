@@ -788,7 +788,25 @@ namespace
         CHECK(!o.ext<clap_plugin_preset_load_t>(CLAP_EXT_PRESET_LOAD)->from_location(o.p, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "200"));
     }
 
+    // Overdrive at its defaults is about as loud as clean, as in setBfree (its preamp's own
+    // starting gains, not the documented 0.3567 and 0.07873).
+    void overdrive()
+    {
+        double level[2];
+        for(int on : {0, 1})
+        {
+            Instance o(48000);
+            o.at(0).param(param("Overdrive"), on);
+            for(int16_t k : {48, 55, 60, 63, 67}) o.at(0).note(CLAP_EVENT_NOTE_ON, 0, k, k);
+            const auto x = o.render(48000, 512).left;
+            level[on] = rms(x, 24000, 48000);
+        }
+        std::printf("  clean %.4f, overdrive %.4f\n", level[0], level[1]);
+        CHECK(level[1] > 0.4 * level[0] && level[1] < 1.5 * level[0]);
+    }
+
     const std::map<std::string, std::function<void()>> tests = {
+        {"overdrive", overdrive},
         {"presets", presets},
         {"memory", memory},
         {"startup", startup},

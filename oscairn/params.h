@@ -142,8 +142,8 @@ namespace organ
 
         LIVE_LIST("Overdrive", "Overdrive", 1, 0, Map::Switch, "overdrive.enable", offOn, W_SWITCH, 18),
         LIVE_UNIT("Overdrive character", "Overdrive", 0, "overdrive.character", 19),
-        LIVE_UNIT("Overdrive drive", "Overdrive", 5.0 / 127, "overdrive.inputgain", 29),
-        CFG_NUM("Overdrive output", "Overdrive", 0.01, 10, 0.07873, "overdrive.outputgain", Text::Decibel, "dB"),
+        LIVE_UNIT("Overdrive drive", "Overdrive", 45.0 / 127, "overdrive.inputgain", 29), // the preamp starts at 3.5675, step 45 is 3.5636
+        CFG_NUM("Overdrive output", "Overdrive", 0.01, 10, 0.8795, "overdrive.outputgain", Text::Decibel, "dB"), // initPreamp's, not its doc's 0.07873
 
         LIVE_UNIT("Reverb", "Reverb", 13.0 / 127, "reverb.mix", 39),
 

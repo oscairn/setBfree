@@ -216,6 +216,7 @@ sbf_program_get (int pc, sbf_program* out)
 		return 0;
 	}
 	memset (out, -1, sizeof (*out));
+	out->reverb = -1;
 	snprintf (out->name, sizeof (out->name), "%s", g->name);
 	for (int i = 0; i < 9; ++i) {
 		out->upper[i] = (int)g->drawbars[i];
