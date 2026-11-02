@@ -1642,8 +1642,6 @@ preFilterDefine ()
 	codeln ("pr_a1 = (float) C[EQC_A1];");
 	codeln ("pr_a2 = (float) C[EQC_A2];");
 
-	codeln ("printf(\"\\rPRE:Hz:%10.4lf:Q:%10.4lf:G:%10.4lf\",fq,Q,G);");
-	codeln ("fflush (stdout);");
 
 	popIndent ();
 	codeln ("}");
@@ -1669,8 +1667,6 @@ postFilterDefine ()
 	codeln ("de_a1 = (float) C[EQC_A1];");
 	codeln ("de_a2 = (float) C[EQC_A2];");
 
-	codeln ("printf(\"\\rPST:Hz:%10.4lf:Q:%10.4lf:G:%10.4lf\",fq,Q,G);");
-	codeln ("fflush (stdout);");
 
 	popIndent ();
 	codeln ("}");
@@ -1808,8 +1804,6 @@ outputGainControl ()
 	         OUTPUT_GAIN_HI,
 	         OUTPUT_GAIN_LO);
 	codeln (buf);
-	codeln ("printf (\"\\rOUT:%10.4lf\", pp->outputGain);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 	INTWRAP ("setOutputGain")
@@ -1830,8 +1824,6 @@ inputGainControl ()
 	         INPUT_GAIN_HI,
 	         INPUT_GAIN_LO);
 	codeln (buf);
-	codeln ("printf (\"\\rINP:%10.4lf\", pp->inputGain);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 	INTWRAP ("setInputGain")
@@ -1846,8 +1838,6 @@ preDCOffsetControl ()
 	pushIndent ();
 	/*   codeln ("preDCOffset = 1.0 + ((((float) uc) / 127.0) * -2.0);"); */
 	codeln ("preDCOffset = (((float) uc) / 511.0);");
-	codeln ("printf (\"\\rPDC=%10.4f\", preDCOffset);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 }
@@ -1881,8 +1871,6 @@ inputCompressControl ()
 	         IPC_THR_HI,
 	         IPC_THR_LO);
 	codeln (buf);
-	codeln ("printf (\"\\rCTH=%10.4f\", ipcThreshold);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 
@@ -1894,8 +1882,6 @@ inputCompressControl ()
 	sprintf (buf, "ipcGainReduce = %g + ((%g - %g) * ratio);",
 	         IPC_ATK_LO, IPC_ATK_HI, IPC_ATK_LO);
 	codeln (buf);
-	codeln ("printf (\"\\rCAT=%10.4f\", ipcGainReduce);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 
@@ -1907,8 +1893,6 @@ inputCompressControl ()
 	sprintf (buf, "ipcGainRecover = %g + ((%g - %g) * ratio);",
 	         IPC_RLS_LO, IPC_RLS_HI, IPC_RLS_LO);
 	codeln (buf);
-	codeln ("printf (\"\\rCRL=%10.4f\", ipcGainRecover);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 }

@@ -81,8 +81,6 @@ cfg_quadratic ()
 	codeln ("q_Tn  = 0.5 * q_Ta;");
 	codeln ("q_Tni = 1.0 / q_Tn;");
 	codeln ("q_Th  = threshold;");
-	codeln ("printf (\"\\rTHR=%10.4f\", threshold);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 }

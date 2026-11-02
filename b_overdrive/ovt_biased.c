@@ -117,8 +117,6 @@ cfg_biased ()
 	codeln ("pp->bias = pp->biasBase;");
 	codeln ("pp->norm = 1.0 - (1.0 / (1.0 + (pp->bias * pp->bias)));");
 #if 0
-	codeln ("printf (\"\\rBIAS=%10.4fNORM=%10.4f\", bias, norm);");
-	codeln ("fflush (stdout);");
 #endif
 	popIndent ();
 	codeln ("}");
@@ -149,8 +147,6 @@ ctl_biased ()
 	codeln ("struct b_preamp *pp = (struct b_preamp *) pa;");
 	sprintf (buf, "pp->adwFb = %g * u;", ADWS_FB_MAX);
 	codeln (buf);
-	codeln ("printf (\"\\rFbk=%10.4f\", pp->adwFb);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 
@@ -168,8 +164,6 @@ ctl_biased ()
 	         SAG_ZGB_HI,
 	         SAG_ZGB_LO);
 	codeln (buf);
-	codeln ("printf (\"\\rpp->ZGB=%10.4f\", pp->sagZgb);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 	FLOATWRAP ("ctl_sagtoBias")
@@ -183,8 +177,6 @@ ctl_biased ()
 	codeln ("struct b_preamp *pp = (struct b_preamp *) pa;");
 	sprintf (buf, "pp->adwFb2 = %g * u;", ADWS_FB2_MAX);
 	codeln (buf);
-	codeln ("printf (\"\\rFb2=%10.4f\", pp->adwFb2);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 	FLOATWRAP ("ctl_biased_fb2")
@@ -198,8 +190,6 @@ ctl_biased ()
 	codeln ("struct b_preamp *pp = (struct b_preamp *) pa;");
 	sprintf (buf, "pp->adwGfb = %g * u;", ADWS_GFB_MAX);
 	codeln (buf);
-	codeln ("printf (\"\\rGfb=%10.4f\", pp->adwGfb);");
-	codeln ("fflush (stdout);");
 	popIndent ();
 	codeln ("}");
 	FLOATWRAP ("ctl_biased_gfb")

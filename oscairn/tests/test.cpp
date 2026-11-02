@@ -36,6 +36,8 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 using namespace organtest;
 
 namespace
@@ -535,7 +537,47 @@ namespace
         CHECK(blocks > 100 && prepared >= 4 && discarded == prepared);
     }
 
+    // Nothing on stdout or stderr from building engines or playing (it is the host's).
+    void quiet()
+    {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        FILE* sink = std::tmpfile();
+        const int out = dup(1), err = dup(2);
+        dup2(fileno(sink), 1);
+        dup2(fileno(sink), 2);
+        {
+            Instance o(48000);
+            auto* params = o.ext<clap_plugin_params_t>(CLAP_EXT_PARAMS);
+            o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 1);
+            for(double which : {1.0, 0.0})
+                for(uint32_t i = 0; i < params->count(o.p); ++i)
+                {
+                    clap_param_info_t info;
+                    params->get_info(o.p, i, &info);
+                    o.at(i).param(info.id, which ? info.max_value : info.min_value);
+                }
+            o.render(4800, 480);
+            o.service();
+            o.render(4800, 480);
+        }
+        std::fflush(stdout);
+        std::fflush(stderr);
+        dup2(out, 1);
+        dup2(err, 2);
+        close(out);
+        close(err);
+        const long written = std::ftell(sink);
+        std::rewind(sink);
+        char text[200] = "";
+        text[std::fread(text, 1, sizeof(text) - 1, sink)] = 0;
+        std::fclose(sink);
+        if(written) std::printf("  printed %ld bytes: %s\n", written, text);
+        CHECK(written == 0);
+    }
+
     const std::map<std::string, std::function<void()>> tests = {
+        {"quiet", quiet},
         {"threads", threads},
         {"metadata", metadata}, {"determinism", determinism}, {"realtime", realtime}, {"state", state},
         {"notes", notes}, {"choke", chokeAndVolume}, {"contexts", soundContexts}, {"sleep", sleep},
