@@ -65,6 +65,8 @@ namespace
         return id;
     }
 
+    constexpr uint32_t F_ = SBF_FRAGMENT;
+
     double rms(const std::vector<float>& x, size_t from, size_t to)
     {
         double s = 0;
@@ -681,6 +683,116 @@ namespace
         return m;
     }
 
+    // One key's attack and release gain, from the engine (8' only, no leakage: one tonewheel,
+    // A4, so the gain is its envelope). setBfree runs a wheel only while a key uses it, so the
+    // attack is measured on a wheel already turning for a lower-manual key (16', also A4), a
+    // silent pedal key letting go as the key goes down so that as many keys stay down: gain is
+    // (attacked - lower) / (both - lower). The release is the key over the key held. NaN where
+    // the divisor is too small.
+    struct KeyEnvelope { double rate; std::vector<double> attack, release; };
+    KeyEnvelope keyEnvelope(double rate, const std::string& extra = "")
+    {
+        const std::string config = "whirl.bypass=1\nosc.compartment-crosstalk=0\nosc.transformer-crosstalk=0\n"
+                                   "osc.terminalstrip-crosstalk=0\nosc.wiring-crosstalk=0\n" + extra;
+        enum { Attacked, Both, Lower, Released, Held, Engines };
+        sbf_engine* e[Engines];
+        auto key = [&](int which, int status, int k) { const uint8_t m[3] = {uint8_t(status), uint8_t(k), uint8_t(status & 0x10 ? 127 : 0)}; sbf_midi(e[which], m, 3); };
+        for(auto& x : e)
+        {
+            x = sbf_create(rate, config.c_str());
+            for(const char* manual : {"upper", "lower", "pedal"}) // every drawbar in (MIDI 127) ...
+                for(const char* footage : {"16", "513", "8", "4", "223", "2", "135", "113", "1"})
+                    sbf_control(x, sbf_control_id((std::string(manual) + ".drawbar" + footage).c_str()), 127);
+            for(auto [name, v] : {std::pair{"upper.drawbar8", 0}, {"lower.drawbar16", 64}, {"reverb.mix", 0}}) // ... but these
+                sbf_control(x, sbf_control_id(name), uint8_t(v));
+        }
+        for(int w : {Attacked, Both, Lower}) key(w, 0x91, 81);
+        for(int w : {Attacked, Lower}) key(w, 0x92, 36);
+        for(int w : {Both, Released, Held}) key(w, 0x90, 69);
+        const uint32_t on = uint32_t(rate * 0.1) / F_ + 1, end = on + uint32_t(rate * 0.02) / F_;
+        std::vector<float> out[Engines];
+        float l[F_], r[F_];
+        for(uint32_t f = 0; f < end; ++f)
+        {
+            if(f == on) { key(Attacked, 0x90, 69); key(Attacked, 0x82, 36); key(Released, 0x80, 69); }
+            for(int w = 0; w < Engines; ++w) { sbf_render(e[w], l, r); out[w].insert(out[w].end(), l, l + F_); }
+        }
+        for(auto* x : e) sbf_destroy(x);
+        double top = 0;
+        for(size_t i = F_ * on / 2; i < F_ * on; ++i) top = std::max(top, std::fabs(double(out[Held][i])));
+        KeyEnvelope k{rate, {}, {}};
+        for(size_t i = F_ * on; i < F_ * on + size_t(rate * 0.006); ++i)
+        {
+            const double d = double(out[Both][i]) - out[Lower][i];
+            k.attack.push_back(std::fabs(d) > 0.05 * top ? (double(out[Attacked][i]) - out[Lower][i]) / d : NAN);
+            k.release.push_back(std::fabs(double(out[Held][i])) > 0.05 * top ? double(out[Released][i]) / out[Held][i] : NAN);
+        }
+        return k;
+    }
+    // ms until an attack's gain stays within 1 % of 1, and until a release's falls below 1 %.
+    double attackTime(const KeyEnvelope& k)
+    {
+        size_t last = 0;
+        for(size_t i = 0; i < k.attack.size(); ++i) if(std::fabs(k.attack[i] - 1) > 0.01) last = i + 1; // NaN compares false
+        return last / k.rate * 1000;
+    }
+    double releaseTime(const KeyEnvelope& k)
+    {
+        for(size_t i = 0; i < k.release.size(); ++i) if(std::fabs(k.release[i]) < 0.01) return i / k.rate * 1000;
+        return 1e9;
+    }
+    // Largest difference from the 44.1 kHz envelope, read between its samples.
+    double shapeDifference(const std::vector<double>& g, double rate, const std::vector<double>& ref)
+    {
+        double worst = 0;
+        for(size_t i = 0; i < g.size(); ++i)
+        {
+            const double t = i * 44100.0 / rate;
+            const size_t k = size_t(t);
+            if(std::isnan(g[i]) || k + 1 >= ref.size() || std::isnan(ref[k]) || std::isnan(ref[k + 1])) continue;
+            worst = std::max(worst, std::fabs(g[i] - (ref[k] + (t - k) * (ref[k + 1] - ref[k]))));
+        }
+        return worst;
+    }
+
+    // A key's attack (with its click) and release take the same time, with the same shape, at
+    // every rate. Upstream's took one 128-sample fragment (printed for comparison).
+    void clickRates()
+    {
+        const auto ref = keyEnvelope(44100);
+        for(double rate : {44100.0, 48000.0, 88200.0, 96000.0, 192000.0})
+        {
+            const auto k = keyEnvelope(rate), old = keyEnvelope(rate, "osc.envelope.rate=0\n");
+            const double attack = attackTime(k), release = releaseTime(k);
+            const double da = shapeDifference(k.attack, rate, ref.attack), dr = shapeDifference(k.release, rate, ref.release);
+            std::printf("  %.0f Hz: attack %.3f ms, release %.3f ms, differs from 44.1 kHz's by %.5f / %.5f (one fragment: %.3f, %.3f ms)\n",
+                        rate, attack, release, da, dr, attackTime(old), releaseTime(old));
+            CHECK(std::fabs(attack - attackTime(ref)) < 0.05 && attack > 0.3);
+            CHECK(std::fabs(release - releaseTime(ref)) < 0.05 && release > 2);
+            CHECK(da < 0.01 && dr < 0.01);
+        }
+        // A key let go during its attack and pressed again during its release, at 192 kHz where
+        // they take five fragments: the gain carries on from where it is, without a step.
+        Instance o(192000);
+        o.at(0).param(param("Attack model"), 1).param(param("Leslie"), 0).param(param("Reverb"), 0)
+            .param(param("Upper 16'"), 0).param(param("Upper 5 1/3'"), 0).param(param("Upper 8'"), 8);
+        o.render(256, 256);
+        o.service();
+        o.render(256, 256);
+        o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 69, 1);
+        const auto steady = o.render(19200, 128).left;
+        auto largestStep = [](const std::vector<float>& x, size_t from) {
+            double step = 0;
+            for(size_t i = from + 1; i < x.size(); ++i) step = std::max(step, std::fabs(double(x[i]) - x[i - 1]));
+            return step;
+        };
+        uint32_t t = 0;
+        for(int i = 0; i < 8; ++i, t += 150) o.at(t).note(i % 2 ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF, 0, 69, i % 2 ? 2 + i : -1);
+        const auto overlapped = o.render(4800, 128).left;
+        std::printf("  192 kHz, attacks and releases cut short: largest step %.5f, held %.5f\n", largestStep(overlapped, 0), largestStep(steady, 9600));
+        CHECK(largestStep(overlapped, 0) < 1.2 * largestStep(steady, 9600));
+    }
+
     // Every sample rate sounds the same: pitch, vibrato, percussion decay, Leslie speed.
     void rates()
     {
@@ -811,6 +923,7 @@ namespace
         {"memory", memory},
         {"startup", startup},
         {"rates", rates},
+        {"click", clickRates},
         {"quiet", quiet},
         {"threads", threads},
         {"metadata", metadata}, {"determinism", determinism}, {"realtime", realtime}, {"state", state},

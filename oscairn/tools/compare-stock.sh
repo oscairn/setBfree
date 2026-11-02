@@ -5,6 +5,9 @@
 # UPSTREAM_REF defaults to the merge base with upstream's master (fetched if missing).
 # The fork is built with SETBFREE_LIBC_RAND, as upstream draws its key-click and wave-noise
 # randomness from libc's rand(); the fork's default generator is compared for information.
+# The fork's key attack and release take 2.9 ms at every rate, one fragment at 44.1 kHz as
+# upstream's do: at 44.1 kHz it is compared as it is, at other rates with osc.envelope.rate=0
+# (one fragment at every rate, as upstream), and as it is for information.
 set -eu
 work=$1
 ref=${2:-}
@@ -36,14 +39,24 @@ build fork-default "$root"
 status=0
 for rate in 44100 48000 96000; do
     for config in noconfig config; do
-        for name in stock fork fork-default; do
-            "$work/$name/setbfree-gate-render" $rate "$work/$name-$rate-$config.raw" $config
-        done
+        more=
+        [ $rate = 44100 ] || more="osc.envelope.rate=0"
+        "$work/stock/setbfree-gate-render" $rate "$work/stock-$rate-$config.raw" $config
+        "$work/fork/setbfree-gate-render" $rate "$work/fork-$rate-$config.raw" $config "$more"
+        "$work/fork-default/setbfree-gate-render" $rate "$work/fork-default-$rate-$config.raw" $config
         if cmp -s "$work/stock-$rate-$config.raw" "$work/fork-$rate-$config.raw"; then
-            echo "identical: $rate Hz $config"
+            echo "identical: $rate Hz $config${more:+ ($more)}"
         else
-            echo "DIFFERENT: $rate Hz $config"
+            echo "DIFFERENT: $rate Hz $config${more:+ ($more)}"
             status=1
+        fi
+        if [ -n "$more" ]; then
+            "$work/fork/setbfree-gate-render" $rate "$work/fork-rate-$rate-$config.raw" $config
+            if cmp -s "$work/stock-$rate-$config.raw" "$work/fork-rate-$rate-$config.raw"; then
+                echo "  (fork's 2.9 ms attack and release: identical too)"
+            else
+                echo "  (fork's 2.9 ms attack and release: differs, as expected at this rate)"
+            fi
         fi
         if cmp -s "$work/stock-$rate-$config.raw" "$work/fork-default-$rate-$config.raw"; then
             echo "  (fork's own generator: identical too)"

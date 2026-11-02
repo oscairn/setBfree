@@ -19,7 +19,8 @@
 /* The stock-vs-fork gate's performance: the same MIDI and control changes at the
  * same fragments, rendered by whichever engine sources this was built against,
  * written as raw interleaved float32.
- *   setbfree-gate-render RATE OUT.raw [config|noconfig]
+ *   setbfree-gate-render RATE OUT.raw [config|noconfig] [MORE-CONFIG]
+ * MORE-CONFIG: further configuration lines, for settings only the fork has.
  */
 
 #include <stdio.h>
@@ -99,14 +100,16 @@ int
 main (int argc, char** argv)
 {
 	if (argc < 3) {
-		fprintf (stderr, "usage: %s RATE OUT.raw [config|noconfig]\n", argv[0]);
+		fprintf (stderr, "usage: %s RATE OUT.raw [config|noconfig] [MORE-CONFIG]\n", argv[0]);
 		return 2;
 	}
 	const double rate   = atof (argv[1]);
 	const char*  config = (argc > 3 && !strcmp (argv[3], "config"))
 	                         ? "osc.tuning=442\nosc.compartment-crosstalk=0.02\nwhirl.horn.fastrpm=400\nwhirl.drum.slowrpm=40\nosc.perc.fast=0.8\nscanner.hz=7.0\n"
-	                         : NULL;
-	sbf_engine* e = sbf_create (rate, config);
+	                         : "";
+	char text[1024];
+	snprintf (text, sizeof (text), "%s%s", config, argc > 4 ? argv[4] : "");
+	sbf_engine* e = sbf_create (rate, *text ? text : NULL);
 	if (!e) {
 		fprintf (stderr, "engine failed\n");
 		return 1;

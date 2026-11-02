@@ -248,6 +248,7 @@ initValues (struct b_tonegen* t)
 
 	t->envAttackClickLevel  = 0.50;
 	t->envReleaseClickLevel = 0.25;
+	t->envRate              = 44100.0;
 
 	/* these are set later in initToneGenerator() */
 	t->envAtkClkMinLength = -1; /*  8 @ 22050 */
@@ -2354,6 +2355,8 @@ oscConfig (struct b_tonegen* t, ConfigContext* cfg)
 	} else if ((ack = getConfigParameter_dr ("osc.release.click.level",
 	                                         cfg, &d, 0.0, 1.0)) == 1) {
 		setEnvReleaseClickLevel (t, d);
+	} else if ((ack = getConfigParameter_dr ("osc.envelope.rate",
+	                                         cfg, &t->envRate, 0.0, 768000.0)) == 1) {
 	} else if (!strcasecmp (cfg->name, "osc.release.model")) {
 		ack++;
 		if (!strcasecmp (getConfigValue (cfg), "click")) {
@@ -2393,6 +2396,12 @@ initEnvelopes (struct b_tonegen* t)
 	int    bound;
 	int    start;                                 /* Sample where burst starts */
 	double T = (double)(BUFFER_SIZE_SAMPLES - 1); /* 127.0 */
+
+#ifndef SETBFREE_LIBC_RAND
+	/* Not from where the wave noise left off, whose length depends on the rate: the same
+	 * clicks at every rate. */
+	t->randState = 0x9e3779b9u;
+#endif
 
 	for (b = 0; b < 9; b++) {
 		if (t->envAttackModel == ENV_CLICK) {
@@ -2522,6 +2531,52 @@ initEnvelopes (struct b_tonegen* t)
 		}
 
 	} /* for each envelope buffer */
+
+	/* The tables above take one fragment at envRate; stretch them to the same time at
+	 * the running rate, and hold the target after their end. */
+	if (t->envLength != BUFFER_SIZE_SAMPLES) {
+		const double step = (t->envRate > 0 ? t->envRate : t->SampleRateD) / t->SampleRateD;
+		float        e[BUFFER_SIZE_SAMPLES + 1];
+		for (b = 0; b < 18; b++) {
+			float* env = b < 9 ? t->attackEnv[b] : t->releaseEnv[b - 9];
+			memcpy (e, env, sizeof (float) * BUFFER_SIZE_SAMPLES);
+			e[BUFFER_SIZE_SAMPLES] = 1.0; /* the target, reached at the next fragment */
+			for (i = 0; i < t->envSpan; i++) {
+				double x = i * step;
+				int    k = (int)x;
+				env[i]   = k < BUFFER_SIZE_SAMPLES ? e[k] + (float)(x - k) * (e[k + 1] - e[k]) : 1.0;
+			}
+		}
+	}
+}
+
+/* Storage for the envelopes: envLength samples at the running rate take as long as a
+ * fragment at envRate (2.9 ms at 44100), padded to whole fragments. */
+static void
+allocEnvelopes (struct b_tonegen* t)
+{
+	int    b;
+	float* buf;
+	t->envLength = BUFFER_SIZE_SAMPLES;
+	if (t->envRate > 0) {
+		t->envLength = (int)ceil (BUFFER_SIZE_SAMPLES * t->SampleRateD / t->envRate);
+	}
+	t->envSpan = BUFFER_SIZE_SAMPLES * ((t->envLength + BUFFER_SIZE_SAMPLES - 1) / BUFFER_SIZE_SAMPLES);
+	free (t->envBuffer);
+	t->envBuffer = NULL;
+	buf          = &t->envFragment[0][0];
+	if (t->envSpan > BUFFER_SIZE_SAMPLES) {
+		t->envBuffer = (float*)malloc (sizeof (float) * 18 * t->envSpan);
+		if (t->envBuffer) {
+			buf = t->envBuffer;
+		} else { /* out of memory: one fragment */
+			t->envLength = t->envSpan = BUFFER_SIZE_SAMPLES;
+		}
+	}
+	for (b = 0; b < 9; b++) {
+		t->attackEnv[b]  = buf + b * t->envSpan;
+		t->releaseEnv[b] = buf + (b + 9) * t->envSpan;
+	}
 }
 
 /**
@@ -2836,11 +2891,12 @@ initToneGenerator (struct b_tonegen* t, void* m)
 
 	t->gainTimeConstant = 156.825f / t->SampleRateD; // ~ 25Hz LPF
 
+	/* Burst lengths are samples of the envelope tables, made at envRate. */
 	if (t->envAtkClkMinLength < 0) {
-		t->envAtkClkMinLength = floor (t->SampleRateD * 8.0 / 22050.0);
+		t->envAtkClkMinLength = floor ((t->envRate > 0 ? t->envRate : t->SampleRateD) * 8.0 / 22050.0);
 	}
 	if (t->envAtkClkMaxLength < 0) {
-		t->envAtkClkMaxLength = ceil (t->SampleRateD * 40.0 / 22050.0);
+		t->envAtkClkMaxLength = ceil ((t->envRate > 0 ? t->envRate : t->SampleRateD) * 40.0 / 22050.0);
 	}
 
 	if (t->envAtkClkMinLength > BUFFER_SIZE_SAMPLES) {
@@ -2871,6 +2927,7 @@ initToneGenerator (struct b_tonegen* t, void* m)
 
 #endif /* KEYCOMPRESSION */
 
+	allocEnvelopes (t);
 	initEnvelopes (t);
 
 	/* Initialise drawbar gain values */
@@ -2966,6 +3023,7 @@ freeToneGenerator (struct b_tonegen* t)
 		if (t->oscillators[i].wave)
 			free (t->oscillators[i].wave);
 	}
+	free (t->envBuffer);
 	free (t);
 }
 
@@ -3204,55 +3262,25 @@ oscGenerateFragment (struct b_tonegen* t, float* buf, size_t lengthSamples)
 		AOTElement* aop       = &(t->aot[oscNumber]);         /* Get a pointer to active struct */
 		osp                   = &(t->oscillators[oscNumber]); /* Point to the oscillator */
 
+		/* Where an attack or release still under way has got to: a new one starts there. */
+		float cs = aop->sumSwell, cp = aop->sumPercn, cv = aop->sumScanr;
+		if (osp->envLeft) {
+			const float e = osp->envTable[t->envSpan - osp->envLeft - 1];
+			cs            = osp->g0s + e * (osp->gts - osp->g0s);
+			cp            = osp->g0p + e * (osp->gtp - osp->g0p);
+			cv            = osp->g0v + e * (osp->gtv - osp->g0v);
+		}
+
 		if (osp->rflags & ORF_REMOVED) { /* Decay instruction for removed osc. */
-			/* Put it on the removal list */
-			removedList[removedEnd++] = oscNumber;
-
 			/* All envelopes, both attack and release must traverse 0-1. */
-
-			t->coreWriter->env = t->releaseEnv[i & 7];
-
-			if (copyDone) {
-				t->coreWriter->opr = CR_ADDENV;
-			} else {
-				t->coreWriter->opr = CR_CPYENV;
-				copyDone           = 1;
-			}
-
-			t->coreWriter->src   = osp->wave + osp->pos;
-			t->coreWriter->off   = 0; /* Start at the beginning of target buffers */
-			t->coreWriter->sgain = aop->sumSwell;
-			t->coreWriter->pgain = aop->sumPercn;
-			t->coreWriter->vgain = aop->sumScanr;
+			osp->envTable  = t->releaseEnv[i & 7];
+			osp->envLeft   = t->envSpan;
+			osp->releasing = 1;
+			osp->g0s       = cs;
+			osp->g0p       = cp;
+			osp->g0v       = cv;
 			/* Target gain is zero */
-			t->coreWriter->nsgain = t->coreWriter->npgain = t->coreWriter->nvgain = 0.0;
-
-			if (osp->lengthSamples < (osp->pos + BUFFER_SIZE_SAMPLES)) {
-				/* Need another instruction because of wrap */
-				CoreIns* prev      = t->coreWriter;
-				t->coreWriter->cnt = osp->lengthSamples - osp->pos;
-				osp->pos           = BUFFER_SIZE_SAMPLES - t->coreWriter->cnt;
-				t->coreWriter += 1;
-				t->coreWriter->opr = prev->opr;
-				t->coreWriter->src = osp->wave;
-				t->coreWriter->off = prev->cnt;
-				t->coreWriter->env = prev->env + prev->cnt;
-
-				t->coreWriter->sgain = prev->sgain;
-				t->coreWriter->pgain = prev->pgain;
-				t->coreWriter->vgain = prev->vgain;
-
-				t->coreWriter->nsgain = prev->nsgain;
-				t->coreWriter->npgain = prev->npgain;
-				t->coreWriter->nvgain = prev->nvgain;
-
-				t->coreWriter->cnt = osp->pos;
-			} else {
-				t->coreWriter->cnt = BUFFER_SIZE_SAMPLES;
-				osp->pos += BUFFER_SIZE_SAMPLES;
-			}
-
-			t->coreWriter += 1;
+			osp->gts = osp->gtp = osp->gtv = 0.0;
 		} else { /* ADD or MODIFIED */
 			int reroute = 0;
 
@@ -3316,66 +3344,91 @@ oscGenerateFragment (struct b_tonegen* t, float* buf, size_t lengthSamples)
 				}
 			} /* if rerouting */
 
-			/* Emit instructions for oscillator */
 			if (osp->rflags & OR_ADD) {
-				/* Envelope attack instruction */
-				t->coreWriter->env = t->attackEnv[i & 7];
+				/* Envelope attack, from where the gains are (nothing, for a new contact) */
+				osp->envTable = t->attackEnv[i & 7];
+				if (!osp->envLeft && (osp->rflags & ORF_ADDED)) {
+					cs = cp = cv = 0.0;
+				}
+				osp->envLeft   = t->envSpan;
+				osp->releasing = 0;
+				osp->g0s       = cs;
+				osp->g0p       = cp;
+				osp->g0v       = cv;
+			}
+			if (osp->envLeft && !osp->releasing) {
 				/* Next gain values */
-				t->coreWriter->nsgain = aop->sumSwell;
-				t->coreWriter->npgain = aop->sumPercn;
-				t->coreWriter->nvgain = aop->sumScanr;
-
-				if (copyDone) {
-					t->coreWriter->opr = CR_ADDENV;
-				} else {
-					t->coreWriter->opr = CR_CPYENV;
-					copyDone           = 1;
-				}
-			} else {
-				if (copyDone) {
-					t->coreWriter->opr = CR_ADD;
-				} else {
-					t->coreWriter->opr = CR_CPY;
-					copyDone           = 1;
-				}
+				osp->gts = aop->sumSwell;
+				osp->gtp = aop->sumPercn;
+				osp->gtv = aop->sumScanr;
 			}
+		} /* else aot element not removed, ie modified or added */
 
-			/* The source is the wave of the oscillator at its current position */
-			t->coreWriter->src = osp->wave + osp->pos;
-			t->coreWriter->off = 0;
+		/* Emit instructions for oscillator */
+		if (osp->envLeft) {
+			t->coreWriter->env    = osp->envTable + (t->envSpan - osp->envLeft);
+			t->coreWriter->sgain  = osp->g0s;
+			t->coreWriter->pgain  = osp->g0p;
+			t->coreWriter->vgain  = osp->g0v;
+			t->coreWriter->nsgain = osp->gts;
+			t->coreWriter->npgain = osp->gtp;
+			t->coreWriter->nvgain = osp->gtv;
+			osp->envLeft -= BUFFER_SIZE_SAMPLES;
 
-			if (osp->lengthSamples < (osp->pos + BUFFER_SIZE_SAMPLES)) {
-				/* Instruction wraps source buffer */
-				CoreIns* prev      = t->coreWriter;                            /* Refer to the first instruction */
-				t->coreWriter->cnt = osp->lengthSamples - osp->pos;            /* Set len count */
-				osp->pos           = BUFFER_SIZE_SAMPLES - t->coreWriter->cnt; /* Updat src pos */
-
-				t->coreWriter += 1; /* Advance to next instruction */
-
-				t->coreWriter->opr = prev->opr; /* Same operation */
-				t->coreWriter->src = osp->wave; /* Start of wave because of wrap */
-				t->coreWriter->off = prev->cnt;
-				if (t->coreWriter->opr & 2) {
-					t->coreWriter->env = prev->env + prev->cnt; /* Continue envelope */
-				}
-				/* The gains are identical to the previous instruction */
-				t->coreWriter->sgain = prev->sgain;
-				t->coreWriter->pgain = prev->pgain;
-				t->coreWriter->vgain = prev->vgain;
-
-				t->coreWriter->nsgain = prev->nsgain;
-				t->coreWriter->npgain = prev->npgain;
-				t->coreWriter->nvgain = prev->nvgain;
-
-				t->coreWriter->cnt = osp->pos; /* Up to next read position */
+			if (copyDone) {
+				t->coreWriter->opr = CR_ADDENV;
 			} else {
-				t->coreWriter->cnt = BUFFER_SIZE_SAMPLES;
-				osp->pos += BUFFER_SIZE_SAMPLES;
+				t->coreWriter->opr = CR_CPYENV;
+				copyDone           = 1;
 			}
+		} else {
+			if (copyDone) {
+				t->coreWriter->opr = CR_ADD;
+			} else {
+				t->coreWriter->opr = CR_CPY;
+				copyDone           = 1;
+			}
+		}
+		if (osp->releasing && !osp->envLeft) {
+			/* Released: put it on the removal list */
+			osp->releasing            = 0;
+			removedList[removedEnd++] = oscNumber;
+		}
+
+		/* The source is the wave of the oscillator at its current position */
+		t->coreWriter->src = osp->wave + osp->pos;
+		t->coreWriter->off = 0; /* Start at the beginning of target buffers */
+
+		if (osp->lengthSamples < (osp->pos + BUFFER_SIZE_SAMPLES)) {
+			/* Instruction wraps source buffer */
+			CoreIns* prev      = t->coreWriter;                            /* Refer to the first instruction */
+			t->coreWriter->cnt = osp->lengthSamples - osp->pos;            /* Set len count */
+			osp->pos           = BUFFER_SIZE_SAMPLES - t->coreWriter->cnt; /* Updat src pos */
 
 			t->coreWriter += 1; /* Advance to next instruction */
 
-		} /* else aot element not removed, ie modified or added */
+			t->coreWriter->opr = prev->opr; /* Same operation */
+			t->coreWriter->src = osp->wave; /* Start of wave because of wrap */
+			t->coreWriter->off = prev->cnt;
+			if (t->coreWriter->opr & 2) {
+				t->coreWriter->env = prev->env + prev->cnt; /* Continue envelope */
+			}
+			/* The gains are identical to the previous instruction */
+			t->coreWriter->sgain = prev->sgain;
+			t->coreWriter->pgain = prev->pgain;
+			t->coreWriter->vgain = prev->vgain;
+
+			t->coreWriter->nsgain = prev->nsgain;
+			t->coreWriter->npgain = prev->npgain;
+			t->coreWriter->nvgain = prev->nvgain;
+
+			t->coreWriter->cnt = osp->pos; /* Up to next read position */
+		} else {
+			t->coreWriter->cnt = BUFFER_SIZE_SAMPLES;
+			osp->pos += BUFFER_SIZE_SAMPLES;
+		}
+
+		t->coreWriter += 1; /* Advance to next instruction */
 
 		/* Clear rendering flags */
 		osp->rflags = 0;
@@ -3637,6 +3690,7 @@ static const ConfigDoc doc[] = {
 	{ "osc.release.click.level", CFG_DOUBLE, "0.25", "Amount of random attenuation applied to an opening bus-oscillator", "%", 0, 1, 0.02 },
 	{ "osc.release.model", CFG_TEXT, "\"linear\"", "Model applied during key-release, one of \"click\", \"cosine\", \"linear\", \"shelf\" ", "", 0, 3, 1 },
 	{ "osc.attack.model", CFG_TEXT, "\"click\"", "Model applied during key-attack; one of \"click\", \"cosine\", \"linear\", \"shelf\" ", "", 0, 3, 1 },
+	{ "osc.envelope.rate", CFG_DOUBLE, "44100", "Sample rate at which a key's attack and release (and its click) take one " STRINGIFY (BUFFER_SIZE_SAMPLES) "-sample fragment; at other rates they take the same time. 0: one fragment at every rate", "Hz", 0, 192000, 100 },
 	DOC_SENTINEL
 };
 

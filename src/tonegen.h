@@ -135,6 +135,13 @@ struct _oscillator {
 
 	int            aclPos; /**< Position in active list */
 	unsigned short rflags; /**< Rendering flags */
+
+	/* An attack or release taking more than one fragment */
+	int          envLeft;          /**< Samples of it still to render */
+	int          releasing;        /**< Leaves the active list when it ends */
+	float*       envTable;         /**< Its envelope */
+	float        g0s, g0p, g0v;    /**< Gains it started from */
+	float        gts, gtp, gtv;    /**< Gains it goes to */
 };
 
 /**
@@ -237,8 +244,14 @@ struct b_tonegen {
 
 	/* Attack and release buffer envelopes for 9 buses. */
 
-	float attackEnv[9][BUFFER_SIZE_SAMPLES];  /**< Attack envelope buffer for 9 buses */
-	float releaseEnv[9][BUFFER_SIZE_SAMPLES]; /**< Release envelope buffer for 9 buses */
+	float* attackEnv[9];  /**< Attack envelope buffer for 9 buses, envSpan samples each */
+	float* releaseEnv[9]; /**< Release envelope buffer for 9 buses, envSpan samples each */
+
+	double envRate;   /**< rate at which the envelopes take one fragment; 0: the running rate */
+	int    envLength; /**< samples an attack or release takes */
+	int    envSpan;   /**< envLength in whole fragments */
+	float* envBuffer; /**< the envelopes, when longer than a fragment */
+	float  envFragment[18][BUFFER_SIZE_SAMPLES];
 
 	int   envAttackModel;
 	int   envReleaseModel;
