@@ -213,6 +213,8 @@ struct b_whirl {
 	float drumMic_drr, hornMic_hrr;
 
 	void* midi_cfg_ptr;
+
+	int rampByCaller; ///< if set, whirlProc2 leaves the speeds to whirlRamp calls
 };
 
 extern struct b_whirl* allocWhirl ();
@@ -227,6 +229,8 @@ extern void whirlProc (struct b_whirl* w,
                        float*          outbL,
                        float*          outbR,
                        size_t          bufferLengthSamples);
+
+extern void whirlRamp (struct b_whirl* w, size_t bufferLengthSamples);
 
 extern void whirlProc2 (struct b_whirl* w,
                         const float*    inbuffer,

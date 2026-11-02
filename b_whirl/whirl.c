@@ -1140,35 +1140,11 @@ x_ifloorf (const float f)
 
 #endif
 
+/* Moves the rotors' speeds toward their targets for the next bufferLengthSamples samples.
+ * whirlProc2 does this once per call, unless the caller does (rampByCaller). */
 void
-whirlProc2 (struct b_whirl* w,
-            const float*    inbuffer,
-            float* outL, float* outR,
-            float* outHL, float* outHR,
-            float* outDL, float* outDR,
-            size_t bufferLengthSamples)
+whirlRamp (struct b_whirl* w, size_t bufferLengthSamples)
 {
-	const float* xp = inbuffer;
-	unsigned int i;
-
-	if (w->bypass) {
-		for (i = 0; i < bufferLengthSamples; i++) {
-			if (outL)
-				*outL++ = inbuffer[i];
-			if (outR)
-				*outR++ = inbuffer[i];
-			if (outHL)
-				*outHL++ = inbuffer[i];
-			if (outHR)
-				*outHR++ = inbuffer[i];
-			if (outDL)
-				*outDL++ = 0;
-			if (outDR)
-				*outDR++ = 0;
-		}
-		return;
-	}
-
 	/* compute rotational speeds for this cycle */
 
 	if (w->hornAcDc) {
@@ -1245,6 +1221,40 @@ whirlProc2 (struct b_whirl* w,
 			w->drumAcDc = 0;
 			w->drumIncr = w->drumTarget;
 		}
+	}
+}
+
+void
+whirlProc2 (struct b_whirl* w,
+            const float*    inbuffer,
+            float* outL, float* outR,
+            float* outHL, float* outHR,
+            float* outDL, float* outDR,
+            size_t bufferLengthSamples)
+{
+	const float* xp = inbuffer;
+	unsigned int i;
+
+	if (w->bypass) {
+		for (i = 0; i < bufferLengthSamples; i++) {
+			if (outL)
+				*outL++ = inbuffer[i];
+			if (outR)
+				*outR++ = inbuffer[i];
+			if (outHL)
+				*outHL++ = inbuffer[i];
+			if (outHR)
+				*outHR++ = inbuffer[i];
+			if (outDL)
+				*outDL++ = 0;
+			if (outDR)
+				*outDR++ = 0;
+		}
+		return;
+	}
+
+	if (!w->rampByCaller) {
+		whirlRamp (w, bufferLengthSamples);
 	}
 
 	/* break position -- don't stop anywhere..
