@@ -101,6 +101,7 @@ namespace
         std::ostringstream out;
         out.imbue(std::locale::classic());
         out.precision(17);
+        out << "scanner.modulation.rate=48000\n"; // the vibrato as deep at every rate as at 48 kHz
         for(uint32_t i = 0; i < paramCount; ++i)
         {
             const auto& p = params[i];

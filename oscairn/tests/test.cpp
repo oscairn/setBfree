@@ -24,6 +24,7 @@
 #include <oscairn-clap/sound-contexts.h>
 #include <oscairn-clap/ui.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -576,7 +577,124 @@ namespace
         CHECK(written == 0);
     }
 
+    // Frequency from interpolated rising zero crossings over [from, to).
+    double frequency(const std::vector<float>& x, size_t from, size_t to, double rate)
+    {
+        double first = -1, last = -1;
+        int n = 0;
+        for(size_t i = from + 1; i < to; ++i)
+            if(x[i - 1] < 0 && x[i] >= 0)
+            {
+                const double t = double(i - 1) + x[i - 1] / (x[i - 1] - x[i]);
+                if(first < 0) first = t; else ++n;
+                last = t;
+            }
+        return n > 0 ? n * rate / (last - first) : 0;
+    }
+
+    // One clean 8' tone: no Leslie, reverb, vibrato, percussion or click.
+    void plain(Instance& o)
+    {
+        o.at(0).param(param("Upper 16'"), 0).param(param("Upper 5 1/3'"), 0).param(param("Upper 8'"), 8)
+            .param(param("Leslie"), 0).param(param("Reverb"), 0).param(param("Key click"), 0).param(param("Release click"), 0);
+        o.render(256, 256);
+        o.service();
+        o.render(256, 256);
+    }
+
+    // Envelope (RMS over 10 ms windows) of a signal.
+    std::vector<double> envelope(const std::vector<float>& x, double rate)
+    {
+        const size_t w = size_t(rate / 100);
+        std::vector<double> e;
+        for(size_t i = 0; i + w <= x.size(); i += w) e.push_back(rms(x, i, i + w));
+        return e;
+    }
+
+    struct RateMeasure { double pitch, vibrato, percussion, leslie; };
+    RateMeasure measure(double rate)
+    {
+        RateMeasure m{};
+        { // tonewheel pitch of A4
+            Instance o(rate);
+            plain(o);
+            o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 69, 1);
+            const auto x = o.render(uint32_t(rate * 2), 512).left;
+            m.pitch = frequency(x, size_t(rate * 0.5), x.size(), rate);
+        }
+        { // vibrato V3: the spread of the period-by-period pitch
+            Instance o(rate);
+            plain(o);
+            o.at(0).param(param("Vibrato"), 4).param(param("Vibrato upper"), 1).note(CLAP_EVENT_NOTE_ON, 0, 69, 1);
+            const auto x = o.render(uint32_t(rate * 2), 512).left;
+            double lo = 1e9, hi = 0;
+            const size_t step = size_t(rate / 200); // 5 ms windows
+            for(size_t i = size_t(rate * 0.5); i + 2 * step < x.size(); i += step)
+            {
+                const double f = frequency(x, i, i + 2 * step, rate);
+                if(f > 0) { lo = std::min(lo, f); hi = std::max(hi, f); }
+            }
+            m.vibrato = 1200 * std::log2(hi / lo); // cents peak to peak
+        }
+        { // fast percussion: the difference it makes to an 8' tone, time to fall 20 dB
+            Instance o(rate), q(rate);
+            plain(o);
+            plain(q);
+            o.at(0).param(param("Percussion"), 1).param(param("Percussion decay"), 1).note(CLAP_EVENT_NOTE_ON, 0, 69, 1);
+            q.at(0).note(CLAP_EVENT_NOTE_ON, 0, 69, 1);
+            auto x = o.render(uint32_t(rate * 2), 512).left;
+            const auto y = q.render(uint32_t(rate * 2), 512).left;
+            for(size_t i = 0; i < x.size(); ++i) x[i] -= y[i];
+            const auto e = envelope(x, rate);
+            const auto peak = std::max_element(e.begin(), e.end());
+            auto fall = peak;
+            while(fall != e.end() && *fall > *peak * 0.1) ++fall;
+            m.percussion = double(fall - peak) * 0.01;
+        }
+        { // Leslie horn fast: the amplitude modulation's rate after spin-up
+            Instance o(rate);
+            o.at(0).param(param("Upper 16'"), 0).param(param("Upper 5 1/3'"), 0).param(param("Upper 8'"), 8)
+                .param(param("Reverb"), 0).param(param("Leslie speed"), 2).note(CLAP_EVENT_NOTE_ON, 0, 93, 1);
+            const auto x = o.render(uint32_t(rate * 6), 512).left;
+            // The horn's Doppler shift: the strongest periodicity of the tone's pitch, measured
+            // every 5 ms, between 2 and 12 Hz, to 0.01 Hz.
+            std::vector<double> e;
+            const size_t w = size_t(rate / 200);
+            for(size_t i = size_t(rate * 3); i + 2 * w <= x.size(); i += w) e.push_back(frequency(x, i, i + 2 * w, rate));
+            double mean = 0;
+            for(double v : e) mean += v / double(e.size());
+            for(auto& v : e) v -= mean;
+            double best = 0, power = 0;
+            for(double f = 2; f <= 12; f += 0.01)
+            {
+                double re = 0, im = 0;
+                for(size_t k = 0; k < e.size(); ++k) { re += e[k] * std::cos(2 * M_PI * f * k / 200); im += e[k] * std::sin(2 * M_PI * f * k / 200); }
+                if(re * re + im * im > power) { power = re * re + im * im; best = f; }
+            }
+            m.leslie = best * 60; // RPM
+        }
+        return m;
+    }
+
+    // Every sample rate sounds the same: pitch, vibrato, percussion decay, Leslie speed.
+    void rates()
+    {
+        const auto ref = measure(48000);
+        std::printf("  48000 Hz: A4 %.4f Hz, V3 %.1f cents p-p, fast percussion -20 dB in %.2f s, horn %.1f RPM\n", ref.pitch, ref.vibrato, ref.percussion, ref.leslie);
+        for(double rate : {44100.0, 88200.0, 96000.0, 192000.0})
+        {
+            const auto m = measure(rate);
+            const double cents = 1200 * std::log2(m.pitch / ref.pitch);
+            std::printf("  %.0f Hz: A4 %+.3f cents, V3 %.1f cents p-p, percussion %.2f s, horn %.1f RPM\n", rate, cents, m.vibrato, m.percussion, m.leslie);
+            CHECK(std::fabs(cents) < 0.5);
+            CHECK(std::fabs(m.vibrato - ref.vibrato) < 0.1 * ref.vibrato);
+            CHECK(std::fabs(m.percussion - ref.percussion) <= 0.02);
+            CHECK(std::fabs(m.leslie - ref.leslie) < 0.02 * ref.leslie);
+        }
+    }
+
     const std::map<std::string, std::function<void()>> tests = {
+        {"rates", rates},
         {"quiet", quiet},
         {"threads", threads},
         {"metadata", metadata}, {"determinism", determinism}, {"realtime", realtime}, {"state", state},
