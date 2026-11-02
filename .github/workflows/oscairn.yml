@@ -1,0 +1,62 @@
+# Oscairn branch (doc/oscairn-plan.md): the organ plugin's tests on Linux x86_64, Linux ARM64
+# and macOS, with sanitizers on Linux, the stock-vs-fork gate, and upstream's own build.
+name: Oscairn
+on:
+  push:
+    branches: [oscairn]
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tests:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86_64, os: ubuntu-24.04, type: Release, flags: "", guard: ON, gate: true }
+          - { name: Linux ARM64, os: ubuntu-24.04-arm, type: Release, flags: "", guard: ON, gate: true }
+          - { name: macOS arm64, os: macos-15, type: Release, flags: "", guard: ON, gate: true }
+          - { name: Linux ASan UBSan, os: ubuntu-24.04, type: RelWithDebInfo, flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer", guard: OFF, gate: false }
+          - { name: Linux TSan, os: ubuntu-24.04, type: RelWithDebInfo, flags: "-fsanitize=thread", guard: OFF, gate: false }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Ninja
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then sudo apt-get update && sudo apt-get install -y ninja-build; else brew install ninja; fi
+      - name: Configure
+        run: |
+          cmake -S oscairn -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DORGAN_ALLOC_GUARD=${{ matrix.guard }} \
+            "-DCMAKE_C_FLAGS=${{ matrix.flags }}" "-DCMAKE_CXX_FLAGS=${{ matrix.flags }}" \
+            "-DCMAKE_EXE_LINKER_FLAGS=${{ matrix.flags }}" "-DCMAKE_MODULE_LINKER_FLAGS=${{ matrix.flags }}"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1
+        # TSan on recent Ubuntu kernels needs fewer address-space randomisation bits
+        run: |
+          if [[ "${{ matrix.name }}" == *TSan* ]]; then sudo sysctl vm.mmap_rnd_bits=28; fi
+          ctest --test-dir build --output-on-failure
+      - name: Stock vs fork
+        if: matrix.gate
+        run: oscairn/tools/compare-stock.sh "$RUNNER_TEMP/gate"
+
+  upstream-make:
+    name: Upstream build (JACK, LV2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: sudo apt-get update && sudo apt-get install -y libjack-jackd2-dev lv2-dev libftgl-dev libglu1-mesa-dev ttf-bitstream-vera
+      - run: make -j4
