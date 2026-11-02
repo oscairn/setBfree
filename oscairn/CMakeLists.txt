@@ -35,3 +35,32 @@ target_link_libraries(setbfree_engine PUBLIC $<$<NOT:$<PLATFORM_ID:Darwin>>:m>)
 # Renders the gate's fixed performance to raw float (tools/gate-render.c).
 add_executable(setbfree-gate-render tools/gate-render.c)
 target_link_libraries(setbfree-gate-render PRIVATE setbfree_engine)
+
+# The CLAP plugin. CLAP's headers and Oscairn's extension headers (both MIT) are vendored in
+# third_party/ with the commits they came from.
+add_library(oscairn_organ_headers INTERFACE)
+target_include_directories(oscairn_organ_headers INTERFACE third_party/clap/include third_party/oscairn-clap/include)
+
+add_library(oscairn_organ_plugin STATIC plugin.cpp plugin.h params.h)
+target_link_libraries(oscairn_organ_plugin PUBLIC oscairn_organ_headers setbfree_engine)
+
+add_library(oscairn_organ MODULE entry.cpp)
+target_link_libraries(oscairn_organ PRIVATE oscairn_organ_plugin)
+set_target_properties(oscairn_organ PROPERTIES PREFIX "" SUFFIX ".clap" OUTPUT_NAME oscairn-organ
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+if(APPLE)
+    target_link_options(oscairn_organ PRIVATE -Wl,-exported_symbol,_clap_entry)
+endif()
+install(TARGETS oscairn_organ LIBRARY DESTINATION lib/clap)
+
+if(OSCAIRN_ORGAN_TESTS)
+    option(ORGAN_ALLOC_GUARD "Count allocations in process() (off for sanitizer builds)" ON)
+    enable_testing()
+    add_executable(oscairn-organ-tests tests/test.cpp tests/harness.cpp tests/harness.h)
+    target_include_directories(oscairn-organ-tests PRIVATE tests .)
+    target_compile_definitions(oscairn-organ-tests PRIVATE ORGAN_ALLOC_GUARD=$<BOOL:${ORGAN_ALLOC_GUARD}>)
+    target_link_libraries(oscairn-organ-tests PRIVATE oscairn_organ_plugin)
+    foreach(test metadata determinism realtime state notes choke contexts sleep performance rebuild threads)
+        add_test(NAME organ-${test} COMMAND oscairn-organ-tests ${test})
+    endforeach()
+endif()

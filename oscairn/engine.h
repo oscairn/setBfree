@@ -50,6 +50,10 @@ void sbf_midi (sbf_engine* e, const uint8_t* msg, size_t size);
 int  sbf_control_id (const char* name);
 void sbf_control (sbf_engine* e, int id, uint8_t value);
 
+/* Keyboard splits on the upper manual's channel: keys below pedalSplit play the pedals,
+ * keys from there below lowerSplit the lower manual; 0 turns a split off. */
+void sbf_keyboard_split (sbf_engine* e, int pedalSplit, int lowerSplit);
+
 /* Releases every key. */
 void sbf_panic (sbf_engine* e);
 

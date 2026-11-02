@@ -187,6 +187,12 @@ sbf_control (sbf_engine* e, int id, uint8_t value)
 }
 
 void
+sbf_keyboard_split (sbf_engine* e, int pedalSplit, int lowerSplit)
+{
+	setKeyboardSplitMulti (e->inst.midicfg, 3, pedalSplit, lowerSplit, 0, 0, 0);
+}
+
+void
 sbf_panic (sbf_engine* e)
 {
 	midi_panic (&e->inst);
