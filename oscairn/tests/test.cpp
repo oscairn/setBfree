@@ -693,7 +693,21 @@ namespace
         }
     }
 
+    // The first note of a new engine is no louder than the same note later.
+    void startup()
+    {
+        Instance o(48000);
+        o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 1);
+        const auto x = o.render(48000, 512).left;
+        double first = 0, later = 0;
+        for(size_t i = 0; i < 960; ++i) first = std::max(first, std::fabs(double(x[i])));
+        for(size_t i = 9600; i < x.size(); ++i) later = std::max(later, std::fabs(double(x[i])));
+        std::printf("  peak in the first 20 ms %.3f, after 0.2 s %.3f\n", first, later);
+        CHECK(first < 1.3 * later);
+    }
+
     const std::map<std::string, std::function<void()>> tests = {
+        {"startup", startup},
         {"rates", rates},
         {"quiet", quiet},
         {"threads", threads},

@@ -150,6 +150,9 @@ sbf_create (double rate, const char* config)
 	initRunningConfig (inst->state, inst->midicfg);
 	initMidiTables (inst->midicfg);
 	setDrawBars (inst, 0, defaultPreset);
+	/* tonegen.c starts its output gain at 1.0 and glides to the swell pedal's (0.07) with
+	 * a ~25 Hz low-pass: the first notes after initialisation came out up to 14 times too loud. */
+	inst->synth->currentGain = inst->synth->swellPedalGain;
 
 	if (c) {
 		uselocale (old);
