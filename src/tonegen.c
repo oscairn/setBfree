@@ -340,13 +340,41 @@ dBToGain (double dB)
 	return pow (10.0, (dB / 20.0));
 }
 
+/*
+ * Random numbers for the wave noise and the key-click envelopes. libc's
+ * rand() is process-wide state and differs between C libraries, so the same
+ * settings gave different tables in different processes and on different
+ * systems; each tone generator has its own generator instead.
+ * Build with -DSETBFREE_LIBC_RAND for the old behaviour.
+ */
+#ifdef SETBFREE_LIBC_RAND
+#define TG_RAND_MAX RAND_MAX
+static int
+tgRand (struct b_tonegen* t)
+{
+	return rand ();
+}
+#else
+#define TG_RAND_MAX 0x7fffffff
+static int
+tgRand (struct b_tonegen* t)
+{
+	uint32_t x = t->randState; /* xorshift32 */
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	t->randState = x;
+	return (int)(x >> 1);
+}
+#endif
+
 /**
  * Return a random double in the range 0-1.
  */
-double
-drnd ()
+static double
+drnd (struct b_tonegen* t)
 {
-	return ((double)rand ()) / (double)RAND_MAX;
+	return ((double)tgRand (t)) / (double)TG_RAND_MAX;
 }
 
 /**
@@ -1271,8 +1299,9 @@ writeSamples (float* buf,
               size_t apLen,
               double attenuation,
               double f1Hz,
-              double SampleRateD)
+              struct b_tonegen* t)
 {
+	const double SampleRateD = t->SampleRateD;
 	const double fullCircle = 2.0 * M_PI;
 	double       apl[MAX_PARTIALS];
 	double       plHz[MAX_PARTIALS];
@@ -1316,7 +1345,7 @@ writeSamples (float* buf,
      */
 
 #if 1
-		*yp = (rand () < (RAND_MAX >> 1)) ? 1.0 / 32767.0 : 0;
+		*yp = (tgRand (t) < (TG_RAND_MAX >> 1)) ? 1.0 / 32767.0 : 0;
 		*yp++ += (U * s);
 #else
 		*yp++ = (U * s);
@@ -1514,7 +1543,7 @@ initOscillators (struct b_tonegen* t, int variant, double precision)
 		              (size_t)MAX_PARTIALS,
 		              osp->attenuation,
 		              osp->frequency,
-		              t->SampleRateD);
+		              t);
 
 	} /* for each oscillator struct */
 }
@@ -2372,18 +2401,18 @@ initEnvelopes (struct b_tonegen* t)
 			if (bound < 1) {
 				bound = 1;
 			}
-			burst = t->envAtkClkMinLength + (rand () % bound);
+			burst = t->envAtkClkMinLength + (tgRand (t) % bound);
 			if (bss <= burst) {
 				burst = bss - 1;
 			}
 			/* Select a random start position of the burst. */
-			start = (rand () % (bss - burst));
+			start = (tgRand (t) % (bss - burst));
 			/* From sample 0 to start the amplification is zero. */
 			for (i                     = 0; i < start; i++)
 				t->attackEnv[b][i] = 0.0;
 			/* In the burst area the amplification is random. */
 			for (; i < (start + burst); i++) {
-				t->attackEnv[b][i] = 1.0 - (t->envAttackClickLevel * drnd ());
+				t->attackEnv[b][i] = 1.0 - (t->envAttackClickLevel * drnd (t));
 			}
 			/* From the end of the burst to the end of the envelope the amplification is unity. */
 			for (; i < bss; i++)
@@ -2405,7 +2434,7 @@ initEnvelopes (struct b_tonegen* t)
 			bound = t->envAtkClkMaxLength - t->envAtkClkMinLength;
 			if (bound < 1)
 				bound = 1;
-			start         = rand () % bound;
+			start         = tgRand (t) % bound;
 			if ((bss - 2) <= start)
 				start = bss - 2;
 			for (i                     = 0; i < start; i++)
@@ -2421,7 +2450,7 @@ initEnvelopes (struct b_tonegen* t)
 			bound = t->envAtkClkMaxLength - t->envAtkClkMinLength;
 			if (bound < 1)
 				bound = 1;
-			start         = rand () % bound;
+			start         = tgRand (t) % bound;
 			if ((bss - 2) <= start)
 				start = bss - 2;
 			for (i                      = 0; i < start; i++)
@@ -2434,13 +2463,13 @@ initEnvelopes (struct b_tonegen* t)
 		}
 
 		if (t->envReleaseModel == ENV_CLICK) {
-			burst = 8 + (rand () % 32);
-			start = (rand () % (bss - burst));
+			burst = 8 + (tgRand (t) % 32);
+			start = (tgRand (t) % (bss - burst));
 
 			for (i                      = 0; i < start; i++)
 				t->releaseEnv[b][i] = 0.0;
 			for (; i < (start + burst); i++) {
-				t->releaseEnv[b][i] = 1.0 - (t->envReleaseClickLevel * drnd ());
+				t->releaseEnv[b][i] = 1.0 - (t->envReleaseClickLevel * drnd (t));
 			}
 			for (; i < bss; i++)
 				t->releaseEnv[b][i] = 1.0;
@@ -3553,6 +3582,7 @@ allocTonegen (double rate)
 	if (!t)
 		return NULL;
 	t->SampleRateD = rate;
+	t->randState   = 1;
 	initValues (t);
 	resetVibrato (t);
 	return (t);

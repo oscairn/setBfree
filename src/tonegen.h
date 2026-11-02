@@ -28,6 +28,8 @@
 #define M_PI 3.14159265358979323846 /* pi */
 #endif
 
+#include <stdint.h>
+
 #include "cfgParser.h"
 #include "vibrato.h"
 
@@ -541,6 +543,8 @@ struct b_tonegen {
 	struct b_vibrato inst_vibrato;
 
 	double SampleRateD; /**< sample rate the tables are computed for */
+
+	uint32_t randState; /**< random numbers for wave noise and key click */
 
 	void* midi_cfg_ptr;
 };
