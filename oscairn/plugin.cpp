@@ -30,6 +30,7 @@
 #include "engine.h"
 #include "params.h"
 
+#include <oscairn-clap/memory.h>
 #include <oscairn-clap/sound-contexts-plugin.hpp>
 #include <oscairn-clap/ui.h>
 
@@ -115,6 +116,14 @@ namespace
             out << '\n';
         }
         return out.str();
+    }
+
+    // What one engine allocates at a rate (measured on macOS with malloc_size: 2.45 MB at
+    // 44.1 kHz, 3.14 MB at 96 kHz, 4.71 MB at 176.4 kHz, 7.51 MB at 384 kHz). The tonewheel
+    // tables grow with ceil(rate / 48 kHz); the tests keep this at or above what is allocated.
+    uint64_t engineBytes(double rate)
+    {
+        return 1750000 + 750000 * uint64_t(std::ceil(rate / 48000));
     }
 
     struct Fragment
@@ -711,6 +720,31 @@ namespace
     const clap_plugin_state_t stateExt = {Organ::saveSnapshot, Organ::loadSnapshot};
     const oscairn_plugin_sound_contexts_t soundContextsExt = {Organ::capacity, Organ::get, Organ::prepare, Organ::select, Organ::discard, &stateExt};
 
+    // oscairn.memory: one engine per prepared sound; the first sound is the context, the rest
+    // of the state's sounds are counted as shared.
+    bool memoryEstimate(const clap_plugin_t* p, double rate, uint32_t, oscairn_memory_t* out)
+    {
+        if(rate <= 0) return false;
+        uint64_t sounds = 0;
+        for(const auto& c : self(p).contexts) sounds += c.prepared;
+        out->shared_bytes = sizeof(Organ) + engineBytes(rate) * (sounds - 1);
+        out->context_bytes = engineBytes(rate);
+        out->asset_bytes = 0;
+        return true;
+    }
+    bool memoryCurrent(const clap_plugin_t* p, oscairn_memory_t* out)
+    {
+        auto& s = self(p);
+        if(s.rate <= 0) return false;
+        uint64_t engines = 0;
+        for(const auto& slot : s.slots) engines += (slot.engine != nullptr) + (slot.fading != nullptr) + (slot.pending.load() != nullptr);
+        out->context_bytes = engineBytes(s.rate);
+        out->shared_bytes = sizeof(Organ) + engineBytes(s.rate) * (engines ? engines - 1 : 0);
+        out->asset_bytes = 0;
+        return true;
+    }
+    const oscairn_plugin_memory_t memoryExt = {memoryEstimate, memoryCurrent};
+
     clap_process_status process(const clap_plugin_t* p, const clap_process_t* proc)
     {
         auto& s = self(p);
@@ -765,6 +799,7 @@ const clap_plugin_t* create(const clap_host_t* host)
         if(!std::strcmp(id, CLAP_EXT_PARAMS)) return &paramsExt;
         if(!std::strcmp(id, CLAP_EXT_STATE)) return &stateExt;
         if(!std::strcmp(id, OSCAIRN_EXT_UI)) return &uiExt;
+        if(!std::strcmp(id, OSCAIRN_EXT_MEMORY)) return &memoryExt;
         return nullptr;
     };
     s->plugin.on_main_thread = [](const clap_plugin_t* p) { self(p).service(); };

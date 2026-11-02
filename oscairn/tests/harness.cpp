@@ -26,6 +26,8 @@
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
+#else
+#include <malloc.h>
 #endif
 
 namespace organtest
@@ -34,7 +36,8 @@ namespace organtest
 
     namespace
     {
-        thread_local bool guarded = false;
+        thread_local bool guarded = false, tracking = false;
+        thread_local int64_t tracked = 0;
         std::atomic<int> allocated{0}, freed{0};
 
         const void* hostExtension(const clap_host_t*, const char*) { return nullptr; }
@@ -65,6 +68,8 @@ namespace organtest
     Host host{{CLAP_VERSION_INIT, nullptr, "organ test", "", "", "1", hostExtension, hostRequest, hostRequest, hostCallback}};
 
     void resetAllocations() { allocated = 0; freed = 0; }
+    void trackBytes(bool on) { if(on) tracked = 0; tracking = on; }
+    int64_t trackedBytes() { return tracked; }
     int allocations() { return allocated; }
     int frees() { return freed; }
 
@@ -205,26 +210,33 @@ namespace organtest
 // themselves and build without it (ORGAN_ALLOC_GUARD=OFF).
 #if !ORGAN_ALLOC_GUARD
 #elif defined(__APPLE__)
+static void* counted(void* p)
+{
+    if(p && organtest::tracking) organtest::tracked += int64_t(malloc_size(p));
+    return p;
+}
 extern "C" void* malloc(size_t n)
 {
     if(organtest::guarded) ++organtest::allocated;
-    return malloc_zone_malloc(malloc_default_zone(), n);
+    return counted(malloc_zone_malloc(malloc_default_zone(), n));
 }
 extern "C" void* calloc(size_t c, size_t n)
 {
     if(organtest::guarded) ++organtest::allocated;
-    return malloc_zone_calloc(malloc_default_zone(), c, n);
+    return counted(malloc_zone_calloc(malloc_default_zone(), c, n));
 }
 extern "C" void* realloc(void* p, size_t n)
 {
     if(organtest::guarded) ++organtest::allocated;
-    if(!p) return malloc_zone_malloc(malloc_default_zone(), n);
-    return malloc_zone_realloc(malloc_zone_from_ptr(p), p, n);
+    if(!p) return counted(malloc_zone_malloc(malloc_default_zone(), n));
+    if(organtest::tracking) organtest::tracked -= int64_t(malloc_size(p));
+    return counted(malloc_zone_realloc(malloc_zone_from_ptr(p), p, n));
 }
 extern "C" void free(void* p)
 {
     if(!p) return;
     if(organtest::guarded) ++organtest::freed;
+    if(organtest::tracking) organtest::tracked -= int64_t(malloc_size(p));
     if(auto* zone = malloc_zone_from_ptr(p)) malloc_zone_free(zone, p);
 }
 #elif defined(__GLIBC__)
@@ -232,25 +244,32 @@ extern "C" void* __libc_malloc(size_t);
 extern "C" void* __libc_calloc(size_t, size_t);
 extern "C" void* __libc_realloc(void*, size_t);
 extern "C" void __libc_free(void*);
+static void* counted(void* p)
+{
+    if(p && organtest::tracking) organtest::tracked += int64_t(malloc_usable_size(p));
+    return p;
+}
 extern "C" void* malloc(size_t n)
 {
     if(organtest::guarded) ++organtest::allocated;
-    return __libc_malloc(n);
+    return counted(__libc_malloc(n));
 }
 extern "C" void* calloc(size_t c, size_t n)
 {
     if(organtest::guarded) ++organtest::allocated;
-    return __libc_calloc(c, n);
+    return counted(__libc_calloc(c, n));
 }
 extern "C" void* realloc(void* p, size_t n)
 {
     if(organtest::guarded) ++organtest::allocated;
-    return __libc_realloc(p, n);
+    if(p && organtest::tracking) organtest::tracked -= int64_t(malloc_usable_size(p));
+    return counted(__libc_realloc(p, n));
 }
 extern "C" void free(void* p)
 {
     if(!p) return;
     if(organtest::guarded) ++organtest::freed;
+    if(organtest::tracking) organtest::tracked -= int64_t(malloc_usable_size(p));
     __libc_free(p);
 }
 #endif

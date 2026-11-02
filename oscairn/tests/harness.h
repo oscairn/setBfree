@@ -48,6 +48,9 @@ namespace organtest
     // Allocations and frees made on a thread while it is inside the plugin's process().
     constexpr bool allocationGuard = ORGAN_ALLOC_GUARD;
     void resetAllocations();
+    // Bytes held by allocations made, and not freed, on this thread while tracking.
+    void trackBytes(bool on);
+    int64_t trackedBytes();
     int allocations();
     int frees();
 

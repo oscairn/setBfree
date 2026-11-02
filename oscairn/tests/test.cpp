@@ -21,6 +21,7 @@
 
 #include "harness.h"
 
+#include <oscairn-clap/memory.h>
 #include <oscairn-clap/sound-contexts.h>
 #include <oscairn-clap/ui.h>
 
@@ -706,7 +707,38 @@ namespace
         CHECK(first < 1.3 * later);
     }
 
+    // oscairn.memory: the estimate before activating covers what activating allocates, within 25 %.
+    void memory()
+    {
+        if(!allocationGuard) { std::printf("  (needs the allocation guard's allocator)\n"); return; }
+        for(double rate : {44100.0, 48000.0, 88200.0, 96000.0, 192000.0})
+        {
+            Instance o(rate, false);
+            auto* mem = o.ext<oscairn_plugin_memory_t>(OSCAIRN_EXT_MEMORY);
+            auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+            CHECK(mem && mem->estimate && mem->current);
+            c->prepare(o.p, "second", nullptr, 0, nullptr, nullptr, nullptr, 0); // built at activation
+            oscairn_memory_t e{};
+            CHECK(mem->estimate(o.p, rate, 4096, &e));
+            trackBytes(true);
+            o.p->activate(o.p, rate, 1, 4096);
+            trackBytes(false);
+            const double estimate = double(e.shared_bytes + e.context_bytes + e.asset_bytes), held = double(trackedBytes());
+            std::printf("  %.0f Hz: two sounds, estimate %.2f MB, allocated %.2f MB\n", rate, estimate / 1e6, held / 1e6);
+            CHECK(estimate >= held && estimate <= 1.25 * held);
+            // A third sound costs about one context.
+            trackBytes(true);
+            c->prepare(o.p, "third", nullptr, 0, nullptr, nullptr, nullptr, 0);
+            trackBytes(false);
+            CHECK(double(e.context_bytes) >= double(trackedBytes()) && double(e.context_bytes) <= 1.25 * double(trackedBytes()));
+            oscairn_memory_t now{};
+            CHECK(mem->current(o.p, &now) && now.shared_bytes + now.context_bytes >= e.shared_bytes + e.context_bytes);
+            o.p->start_processing(o.p);
+        }
+    }
+
     const std::map<std::string, std::function<void()>> tests = {
+        {"memory", memory},
         {"startup", startup},
         {"rates", rates},
         {"quiet", quiet},
