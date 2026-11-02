@@ -425,7 +425,7 @@ allocAll ()
 		fprintf (stderr, "FATAL: memory allocation failed for whirl.\n");
 		exit (1);
 	}
-	if (!(inst.synth = allocTonegen ())) {
+	if (!(inst.synth = allocTonegen (SampleRateD))) {
 		fprintf (stderr, "FATAL: memory allocation failed for tonegen.\n");
 		exit (1);
 	}
@@ -476,6 +476,7 @@ initAll ()
 
 	fprintf (stderr, "Oscillators : ");
 	fflush (stderr);
+	inst.synth->SampleRateD = SampleRateD;
 	initToneGenerator (inst.synth, inst.midicfg);
 
 	fprintf (stderr, "Scanner : ");

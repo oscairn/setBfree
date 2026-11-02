@@ -1198,7 +1198,8 @@ static size_t
 fitWave (double Hz,
          double precision,
          int    minSamples,
-         int    maxSamples)
+         int    maxSamples,
+         double SampleRateD)
 {
 	double minErr = 99999.9;
 	double minSpn = 0.0;
@@ -1269,7 +1270,8 @@ writeSamples (float* buf,
               double ap[],
               size_t apLen,
               double attenuation,
-              double f1Hz)
+              double f1Hz,
+              double SampleRateD)
 {
 	const double fullCircle = 2.0 * M_PI;
 	double       apl[MAX_PARTIALS];
@@ -1452,7 +1454,8 @@ initOscillators (struct b_tonegen* t, int variant, double precision)
 		wszs = fitWave (osp->frequency,
 		                precision,
 		                3 * BUFFER_SIZE_SAMPLES, /* Was x1 */
-		                ceil (SampleRateD / 48000.0) * 4096);
+		                ceil (t->SampleRateD / 48000.0) * 4096,
+		                t->SampleRateD);
 
 		/* Compute the number of bytes needed for exactly one wave buffer. */
 
@@ -1510,7 +1513,8 @@ initOscillators (struct b_tonegen* t, int variant, double precision)
 		              harmonicsList,
 		              (size_t)MAX_PARTIALS,
 		              osp->attenuation,
-		              osp->frequency);
+		              osp->frequency,
+		              t->SampleRateD);
 
 	} /* for each oscillator struct */
 }
@@ -1668,9 +1672,9 @@ getPercDecayConst_spl (double ig, double tg, double spls)
  * @param seconds Time expressed as seconds
  */
 double
-getPercDecayConst_sec (double ig, double tg, double seconds)
+getPercDecayConst_sec (struct b_tonegen* t, double ig, double tg, double seconds)
 {
-	return getPercDecayConst_spl (ig, tg, SampleRateD * seconds);
+	return getPercDecayConst_spl (ig, tg, t->SampleRateD * seconds);
 }
 
 /**
@@ -1684,19 +1688,19 @@ computePercResets (struct b_tonegen* t)
 	/* Compute the percussion reset values. */
 
 	/* Alternate 25-May-2003 */
-	t->percEnvGainDecayFastNorm = getPercDecayConst_sec (t->percEnvGainResetNorm,
+	t->percEnvGainDecayFastNorm = getPercDecayConst_sec (t, t->percEnvGainResetNorm,
 	                                                     dBToGain (-60.0),
 	                                                     t->percFastDecaySeconds);
 
-	t->percEnvGainDecayFastSoft = getPercDecayConst_sec (t->percEnvGainResetSoft,
+	t->percEnvGainDecayFastSoft = getPercDecayConst_sec (t, t->percEnvGainResetSoft,
 	                                                     dBToGain (-60.0),
 	                                                     t->percFastDecaySeconds);
 
-	t->percEnvGainDecaySlowNorm = getPercDecayConst_sec (t->percEnvGainResetNorm,
+	t->percEnvGainDecaySlowNorm = getPercDecayConst_sec (t, t->percEnvGainResetNorm,
 	                                                     dBToGain (-60.0),
 	                                                     t->percSlowDecaySeconds);
 
-	t->percEnvGainDecaySlowSoft = getPercDecayConst_sec (t->percEnvGainResetSoft,
+	t->percEnvGainDecaySlowSoft = getPercDecayConst_sec (t, t->percEnvGainResetSoft,
 	                                                     dBToGain (-60.0),
 	                                                     t->percSlowDecaySeconds);
 
@@ -2801,13 +2805,13 @@ initToneGenerator (struct b_tonegen* t, void* m)
 		t->eqvSet[i] = '\0';
 	}
 
-	t->gainTimeConstant = 156.825f / SampleRateD; // ~ 25Hz LPF
+	t->gainTimeConstant = 156.825f / t->SampleRateD; // ~ 25Hz LPF
 
 	if (t->envAtkClkMinLength < 0) {
-		t->envAtkClkMinLength = floor (SampleRateD * 8.0 / 22050.0);
+		t->envAtkClkMinLength = floor (t->SampleRateD * 8.0 / 22050.0);
 	}
 	if (t->envAtkClkMaxLength < 0) {
-		t->envAtkClkMaxLength = ceil (SampleRateD * 40.0 / 22050.0);
+		t->envAtkClkMaxLength = ceil (t->SampleRateD * 40.0 / 22050.0);
 	}
 
 	if (t->envAtkClkMinLength > BUFFER_SIZE_SAMPLES) {
@@ -3543,11 +3547,12 @@ oscGenerateFragment (struct b_tonegen* t, float* buf, size_t lengthSamples)
 } /* oscGenerateFragment */
 
 struct b_tonegen*
-allocTonegen ()
+allocTonegen (double rate)
 {
 	struct b_tonegen* t = (struct b_tonegen*)calloc (1, sizeof (struct b_tonegen));
 	if (!t)
 		return NULL;
+	t->SampleRateD = rate;
 	initValues (t);
 	resetVibrato (t);
 	return (t);

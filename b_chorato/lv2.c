@@ -66,6 +66,7 @@ instantiate (const LV2_Descriptor*     descriptor,
 
 	SampleRateD = rate;
 	reset_vibrato (b3v->instance);
+	b3v->instance->SampleRateD = rate;
 	init_vibrato (b3v->instance);
 
 	return (LV2_Handle)b3v;

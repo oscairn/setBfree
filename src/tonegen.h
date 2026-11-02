@@ -540,6 +540,8 @@ struct b_tonegen {
 
 	struct b_vibrato inst_vibrato;
 
+	double SampleRateD; /**< sample rate the tables are computed for */
+
 	void* midi_cfg_ptr;
 };
 
@@ -572,6 +574,6 @@ extern void oscKeyOn (struct b_tonegen* t, unsigned char midiNote, unsigned char
 extern void setDrawBars (void* inst, unsigned int manual, unsigned int setting[]);
 extern void oscGenerateFragment (struct b_tonegen* t, float* buf, size_t lengthSamples);
 
-struct b_tonegen* allocTonegen ();
+struct b_tonegen* allocTonegen (double rate);
 
 #endif /* TONEGEN_H */

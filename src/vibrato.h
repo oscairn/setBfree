@@ -59,6 +59,8 @@ struct b_vibrato {
 
 	double vibFqHertz;
 
+	double SampleRateD;
+
 	int mixedBuffers;
 	int effectEnabled;
 };

@@ -80,7 +80,7 @@ setScannerFrequency (struct b_vibrato* v, double Hertz)
 {
 	v->vibFqHertz = Hertz;
 	v->statorIncrement =
-	    (unsigned int)(((v->vibFqHertz * INCTBL_SIZE) / SampleRateD) * 65536.0);
+	    (unsigned int)(((v->vibFqHertz * INCTBL_SIZE) / v->SampleRateD) * 65536.0);
 }
 
 /*
@@ -295,6 +295,7 @@ void
 initVibrato (void* t, void* m)
 {
 	struct b_vibrato* v = &(((struct b_tonegen*)t)->inst_vibrato);
+	v->SampleRateD      = ((struct b_tonegen*)t)->SampleRateD;
 	init_vibrato (v);
 	useMIDIControlFunction (m, "vibrato.knob", setVibratoFromMIDI, t);
 	useMIDIControlFunction (m, "vibrato.routing", setVibratoRoutingFromMIDI, t);

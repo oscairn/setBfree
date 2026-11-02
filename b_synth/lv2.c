@@ -381,7 +381,7 @@ allocSynth (struct b_instance* inst)
 	inst->reverb  = allocReverb ();
 	inst->whirl   = allocWhirl ();
 	inst->midicfg = allocMidiCfg (inst->state);
-	inst->synth   = allocTonegen ();
+	inst->synth   = allocTonegen (SampleRateD);
 	inst->preamp  = allocPreamp ();
 
 	initControllerTable (inst->midicfg);
