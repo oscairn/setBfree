@@ -224,6 +224,7 @@ namespace
         bool active = false; // main thread
         uint64_t finished = 0; // voices ended (voicesFinished, for the tests)
         uint64_t shared = 0;   // engines built from another's tone wheels (enginesShared, for the tests)
+        uint32_t engines = 0;  // main: engines alive, in the slots or waiting to be freed (memoryCurrent)
         std::atomic<Values*> presetIn{nullptr}, presetDone{nullptr}; // a loaded preset, main → audio → main
 
         Organ()
@@ -241,7 +242,7 @@ namespace
             delete presetIn.load();
             delete presetDone.load();
             for(auto& s : slots) freeEngines(s);
-            while(auto* e = retired.pop()) sbf_destroy(e);
+            while(auto* e = retired.pop()) destroy(e);
         }
 
         uint32_t slotOf(const Context& c) const { return uint32_t(&c - contexts.data()); }
@@ -255,6 +256,7 @@ namespace
             for(const auto& s : slots) if(s.latest && s.latestConfig == config) { like = s.latest; break; }
             auto* e = sbf_create_like(rate, config.c_str(), like);
             if(!e) return nullptr;
+            ++engines;
             shared += like != nullptr;
             into.latest = e;
             into.latestConfig = std::move(config);
@@ -263,11 +265,18 @@ namespace
             sbf_keyboard_split(e, int(std::lround(v[iPedalSplit])), int(std::lround(v[iLowerSplit])));
             return e;
         }
-        static void freeEngines(Slot& s)
+        // Main thread: every engine is built and destroyed here, so the count is its own.
+        void destroy(sbf_engine* e)
         {
-            sbf_destroy(s.engine); s.engine = nullptr;
-            sbf_destroy(s.fading); s.fading = nullptr;
-            sbf_destroy(s.pending.exchange(nullptr));
+            if(!e) return;
+            sbf_destroy(e);
+            --engines;
+        }
+        void freeEngines(Slot& s)
+        {
+            destroy(s.engine); s.engine = nullptr;
+            destroy(s.fading); s.fading = nullptr;
+            destroy(s.pending.exchange(nullptr));
         }
         // Main thread, processing excluded: every prepared sound gets a fresh engine.
         void rebuildAll()
@@ -589,7 +598,7 @@ namespace
         void service()
         {
             delete presetDone.exchange(nullptr, std::memory_order_acq_rel);
-            while(auto* e = retired.pop()) sbf_destroy(e);
+            while(auto* e = retired.pop()) destroy(e);
             if(rate <= 0) return;
             for(uint32_t i = 0; i < contextCapacity; ++i)
             {
@@ -599,7 +608,7 @@ namespace
                 s.built = want;
                 Values v;
                 for(uint32_t p = 0; p < paramCount; ++p) v[p] = s.shadow[p].load(std::memory_order_relaxed);
-                if(auto* e = build(v, s)) sbf_destroy(s.pending.exchange(e, std::memory_order_release));
+                if(auto* e = build(v, s)) destroy(s.pending.exchange(e, std::memory_order_release));
             }
         }
 
@@ -637,7 +646,7 @@ namespace
             if(rate <= 0) return true;
             auto* e = build(c.patch.values, slot);
             if(!e) return false;
-            sbf_destroy(slot.pending.exchange(e, std::memory_order_release));
+            destroy(slot.pending.exchange(e, std::memory_order_release));
             return true;
         }
         // A setBfree program, by its MIDI program number as the preset's load key.
@@ -863,10 +872,8 @@ namespace
     {
         auto& s = self(p);
         if(s.rate <= 0) return false;
-        uint64_t engines = 0;
-        for(const auto& slot : s.slots) engines += (slot.engine != nullptr) + (slot.fading != nullptr) + (slot.pending.load() != nullptr);
         out->context_bytes = engineBytes(s.rate);
-        out->shared_bytes = sizeof(Organ) + engineBytes(s.rate) * (engines ? engines - 1 : 0);
+        out->shared_bytes = sizeof(Organ) + engineBytes(s.rate) * (s.engines ? s.engines - 1 : 0);
         out->asset_bytes = 0;
         return true;
     }

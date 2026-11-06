@@ -620,13 +620,14 @@ namespace
         CHECK(noteEnds(r.events, 1) == 1);
     }
 
-    // The main thread prepares, selects, discards and builds engines while the audio thread plays
-    // (run under ThreadSanitizer in CI).
+    // The main thread prepares, selects, discards, builds engines and reads the memory in use while
+    // the audio thread plays (run under ThreadSanitizer in CI).
     void threads()
     {
         const auto snapshot = Instance(48000).save(); // one sound, prepared beside while rendering
         Instance o(48000);
         auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        auto* mem = o.ext<oscairn_plugin_memory_t>(OSCAIRN_EXT_MEMORY);
         const auto tuning = param("Tuning"), drawbar = param("Upper 8'");
         std::atomic<bool> stop{false}, play{true};
         std::atomic<uint32_t> blocks{0};
@@ -671,6 +672,8 @@ namespace
             }
             oscairn_sound_context_info_t info;
             for(uint32_t slot = 0; slot < 8; ++slot) c->get(o.p, slot, &info);
+            oscairn_memory_t m;
+            CHECK(mem->current(o.p, &m) && m.shared_bytes > 0);
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         for(int wait = 0; !ids.empty() && wait < 5000; ++wait)
