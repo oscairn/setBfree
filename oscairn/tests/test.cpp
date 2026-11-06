@@ -1142,7 +1142,16 @@ namespace
         // A key held on the outgoing sound rings out beside the incoming one, which plays as alone.
         Instance mixed(48000), old(48000), fresh(48000);
         CHECK(fresh.load(S));
-        for(auto* i : {&mixed, &old}) { i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 48, 9); i->render(4800, 480); }
+        const oscairn_sound_parameter_t bright[] = {{param("Upper 4'"), 8}, {param("Upper 2'"), 8}};
+        uint32_t outgoing = 0;
+        for(auto* i : {&mixed, &old})
+        {
+            auto* ic = i->ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+            outgoing = ic->prepare(i->p, "bright", bright, 2, nullptr, nullptr, nullptr, 0);
+            CHECK(outgoing != CLAP_INVALID_ID && ic->select(i->p, outgoing, -1));
+            i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 48, 9);
+            i->render(4800, 480);
+        }
         fresh.render(4800, 480);
         CHECK(prepareSnapshot(mixed, S, selected));
         cue(mixed, selected);
@@ -1151,24 +1160,27 @@ namespace
         for(auto* i : {&mixed, &old}) i->at(4800).note(CLAP_EVENT_NOTE_OFF, 0, 48, 9);
         auto* m = mixed.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
         CHECK(!m->discard(mixed.p, selected[0]) && !m->discard(mixed.p, selected[1])); // selected
+        CHECK(!m->discard(mixed.p, outgoing)); // its key is down
         const auto y = mixed.render(2400, 480).left, o1 = old.render(2400, 480).left, f1 = fresh.render(2400, 480).left;
         bool sum = true;
         for(size_t i = 0; i < y.size(); ++i) sum &= y[i] == o1[i] + f1[i];
         CHECK(sum && rms(o1, 0, 2400) > 1e-3 && rms(f1, 0, 2400) > 1e-3);
-        CHECK(m->get(mixed.p, 0, &info) && info.active_voices == 1 && !info.idle);
-        // The old sound is retired only once its key and tail have ended: then it can go, and the
-        // incoming Default (not ID 0) with it once unselected.
+        auto outgoingInfo = [&] { for(uint32_t slot = 0; slot < 8; ++slot) if(m->get(mixed.p, slot, &info) && info.id == outgoing) return true; return false; };
+        CHECK(outgoingInfo() && info.active_voices == 1 && !info.idle);
+        // The outgoing sound is retired only once its key and tail have ended.
         mixed.render(4800, 480);
-        CHECK(m->get(mixed.p, 0, &info) && info.active_voices == 0 && !info.idle); // its tail rings
+        CHECK(outgoingInfo() && info.active_voices == 0 && !info.idle); // its tail rings
+        CHECK(!m->discard(mixed.p, outgoing));
         uint32_t frames = 0;
-        while(!(m->get(mixed.p, 0, &info) && info.idle) && frames < 48000 * 10) frames += 4800, mixed.render(4800, 480);
+        while(!(outgoingInfo() && info.idle) && frames < 48000 * 10) frames += 4800, mixed.render(4800, 480);
         std::printf("  the outgoing sound's tail ended %.1f s after its key\n", (frames + 4800 + 2400) / 48000.0);
-        CHECK(info.idle && !m->discard(mixed.p, 0)); // the Default is never discarded
+        CHECK(info.idle && m->discard(mixed.p, outgoing));
+        CHECK(!m->discard(mixed.p, 0)); // the Default is never discarded
 
         // All or nothing: a bad snapshot, or too few free contexts, adds nothing and says why.
         char message[128] = "";
         Instance full(48000);
-        CHECK(!prepareSnapshot(full, "oscairn-organ-1 nonsense", selected, message, sizeof(message)) && *message);
+        CHECK(!prepareSnapshot(full, "oscairn-organ-1 nonsense", selected, message, sizeof(message)) && *message && preparedCount(full) == 1);
         auto* f = full.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
         for(int i = 0; i < 6; ++i) CHECK(f->prepare(full.p, "filler", nullptr, 0, nullptr, nullptr, nullptr, 0) != CLAP_INVALID_ID);
         *message = 0;
