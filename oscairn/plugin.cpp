@@ -921,7 +921,7 @@ const clap_plugin_descriptor_t descriptor = {
     "https://github.com/oscairn/setBfree",
     "",
     "",
-    "0.4.2",
+    "0.4.3",
     "A tonewheel organ and Leslie: setBfree by Fredrik Kilander, Will Panther, Robin Gareus and Ken Restivo",
     features,
 };
