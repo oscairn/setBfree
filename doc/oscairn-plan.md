@@ -255,7 +255,8 @@ Decided by Jacob (2026-11-02, and 12–14 and the vendor on 2026-11-05) are mark
     setBfree Leslie 0.2.0 (the horn at high rates, the cabinet clamp, Mix). Session 4: setBfree
     0.4.0 (snapshots prepared beside, draft 1), then 0.4.1 (draft 2, the ring-out buffer: Oscairn
     no longer reads draft 1); the Leslie unchanged at 0.2.0. Session 5: setBfree 0.4.2 (draft 3,
-    `choke_retiring`: Oscairn no longer reads draft 2; the choke fade and reset fixes).
+    `choke_retiring`: Oscairn no longer reads draft 2; the choke fade and reset fixes). Session 6:
+    setBfree 0.4.3 (a muted sound's tail cleared).
 16. **Instant Performance changes — proposed (session 4), for Jacob to confirm:** offer
     `oscairn.sound-snapshots/draft-3` (with the ring-out buffer, so outgoing sounds ring out
     through the outgoing Performance's chain, and `choke_retiring`, so only one change's tail
@@ -656,7 +657,7 @@ A code review of the branch against `master`, and Oscairn's move to `oscairn.sou
   puts the pedals back up. `reset` plays a chord with the swell pedal down, resets with the keys held,
   and requires the next note to render as on a fresh instance.
 
-**Open, for Jacob** (not changed): `silence()` leaks a slot's fading engine when the retire ring has
+**Open, for Jacob** (not changed; all four fixed in session 6): `silence()` leaks a slot's fading engine when the retire ring has
 no room (32 entries; needs 24 unserviced retirements, so unlikely); `memoryCurrent` reads the
 slots' engine pointers from the main thread while the audio thread may swap them (a formal race, no
 test hits it); a sound muted by a choke or a volume-0 key keeps its reverb and Leslie state, which
@@ -669,6 +670,47 @@ plugin only (`scanner.modulation.rate`), so the gate's engine-level renders stay
 UBSan, TSan, the stock gate 6 of 6 identical; all passed. **CI** on `c766535`, `987421e`, `1cf5e43`
 and `a960413`: all six jobs passed on each. The one failed run in the branch's history (`c867b59`)
 was a macOS runner never acquired, not a test. Oscairn's host tests were not run this session.
+
+### Session 6 (2026-11-06): the review's four open findings
+
+**Fixed** (each with a test that failed before it):
+
+- `d3ce4f8`: `memoryCurrent` read the slots' engine pointers from the main thread (TSan reports the
+  race once `threads` calls it while rendering). The main thread builds and destroys every engine,
+  so it keeps its own count of the engines alive, the ones waiting in the retire ring included.
+- `d04bf73`: an engine was lost when the retire ring had no room (`silence()` dropped it; the
+  crossfade's end pushed without looking). An engine now leaves its slot only through `retire()`,
+  which pushes when there is room and otherwise leaves it waiting, its fade over, for the next block
+  while the slot is pinned (an unpinned slot is the main thread's, which frees a waiting engine with
+  the slot's others on discard). The ring's 32 entries exceed what any run of blocks can retire
+  between two services (at most two per slot), so the wait is never reached in practice; `retire`
+  narrows the ring to two (`organ::retireCapacity`, for the tests) and overruns it with eight
+  crossfades, a reset and a deactivation: every engine is freed within eight services, and nothing an
+  engine's size is held once the instance is destroyed (the allocation guard's count; libc's own
+  buffers freed through it leave the figure a little negative). With the old code the test crashes.
+- `1a335c7`: a sound muted (its last key choked, or let go at volume 0) kept its tail in the engine,
+  which came back at full gain with the sound's next key. `sbf_clear_tail` (engine.c) releases every
+  key, drops the remaining releases from the tone generator's active list and empties the vibrato,
+  reverb and Leslie delay lines (the Leslie's clear shared with the rotor's); `endTail` calls it when
+  the tail was muted, not when it rang out quiet. `muted` plays a key with the reverb full and the
+  Leslie fast, ends it both ways, then presses a key with every drawbar out: the old tail peaked at
+  0.23, now 3e-14. The overdrive's 192 samples of history are not cleared (overdrive.c is generated
+  by overmaker.c; the history only matters with the overdrive on, and is 4 ms long).
+- `61eb2cc`: the stock gate's performance presses a D4 again within its own release: let go and
+  pressed before one fragment, and let go before one fragment and pressed before the next. Still 6 of
+  6 identical, so that corner of the envelope restructure is pinned to upstream at 44.1 kHz and with
+  `osc.envelope.rate=0`.
+- `5fdad68`: setBfree 0.4.3 (the sound changes after a mute). The Leslie unchanged at 0.2.0.
+
+**Gates on each committed tree** (worktrees, macOS arm64): release tests (36, 37, 38, 38, 38), ASan
+and UBSan, TSan, the stock gate 6 of 6 identical; all passed. **CI** on `d3ce4f8`, `d04bf73`,
+`1a335c7`, `61eb2cc` and `5fdad68`: all six jobs passed on each.
+
+**Oscairn host tests** (Oscairn main `cd562ae` built outside the repo, Release, macOS arm64; plugin
+from `5fdad68`): `kick-clap-scan` lists both plugins. `oscairn-plugin-check setbfree.clap
+org.oscairn.setbfree synth --param 3=2` and `... org.oscairn.setbfree.leslie effect --param 1=2`
+PASSED in the engine and with `OSCAIRN_PLUGIN_WORKER`; the organ's reopened render differs by rms
+0.00014 (the Leslie has turned; informational), the Leslie's by 0.
 
 ## 11. Known differences
 
