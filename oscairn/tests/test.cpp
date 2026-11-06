@@ -1020,6 +1020,52 @@ namespace
         CHECK(a.left == b.left && a.right == b.right && rms(b.left, 0, 24000) > 1e-3);
     }
 
+    // Engines the audio thread retires wait in their slots while the main thread has not freed the
+    // ones before them: nothing is lost however many retire between services. With the ring narrowed
+    // to two, eight sounds' crossfades, a reset and a deactivation all overrun it. Run twice, the
+    // second time counting bytes: nothing an engine's size is held once the instance is destroyed
+    // (libc's own buffers, freed through the counting free(), leave the figure a little negative).
+    void retire()
+    {
+        if(!allocationGuard) std::printf("  (the leak check needs the allocation guard's allocator)\n");
+        const auto tuning = param("Tuning");
+        uint64_t engine = 0;
+        auto scenario = [&] {
+            Instance o(48000, false);
+            organ::retireCapacity(o.p, 2);
+            o.p->activate(o.p, 48000, 1, 4096);
+            o.p->start_processing(o.p);
+            auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+            auto* mem = o.ext<oscairn_plugin_memory_t>(OSCAIRN_EXT_MEMORY);
+            for(int16_t ch = 1; ch < 8; ++ch) CHECK(c->select(o.p, c->prepare(o.p, "s", nullptr, 0, nullptr, nullptr, nullptr, 0), ch));
+            for(int16_t ch = 0; ch < 8; ++ch) o.at(0).note(CLAP_EVENT_NOTE_ON, ch, 60, ch);
+            o.render(960, 480); // eight sounds ringing
+            oscairn_memory_t e{}, now{};
+            CHECK(mem->estimate(o.p, 48000, 4096, &e));
+            const auto eight = e.shared_bytes + e.context_bytes; // sizeof the instance and eight engines
+            engine = e.context_bytes;
+            for(int round = 0; round < 4; ++round)
+            {
+                o.at(0).param(tuning, 441 + round); // every sound: a new engine
+                o.render(480, 480);
+                o.service();                        // builds them, frees at most two
+                o.render(960, 480);                 // adopted and crossfaded: two fit the ring, six wait
+                if(round == 1) o.p->reset(o.p);     // silence() with the ring full
+                if(round == 2) { o.p->deactivate(o.p); o.p->activate(o.p, 48000, 1, 4096); o.p->start_processing(o.p); }
+                CHECK(mem->current(o.p, &now) && now.shared_bytes + now.context_bytes > eight); // engines wait
+            }
+            int rounds = 0;
+            for(; rounds < 40 && mem->current(o.p, &now) && now.shared_bytes + now.context_bytes != eight; ++rounds) { o.service(); o.render(480, 480); }
+            std::printf("  %d rounds of service to free the waiting engines; %.2f MB held, 8 sounds estimated at %.2f MB\n", rounds, double(trackedBytes()) / 1e6, double(eight) / 1e6);
+            CHECK(rounds < 40);
+        };
+        scenario();
+        trackBytes(true);
+        scenario();
+        trackBytes(false);
+        if(allocationGuard) { std::printf("  held after destroy: %lld bytes\n", (long long)trackedBytes()); CHECK(trackedBytes() < int64_t(engine)); }
+    }
+
     // oscairn.memory: the estimate before activating covers what activating allocates, within 25 %.
     void memory()
     {
@@ -1376,6 +1422,7 @@ namespace
         {"shared-wheels", sharedWheels},
         {"snapshots", snapshots},
         {"memory", memory},
+        {"retire", retire},
         {"reset", reset},
         {"startup", startup},
         {"rates", rates},

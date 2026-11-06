@@ -158,11 +158,13 @@ namespace
         uint32_t pos = F; // F: the next sample needs a new fragment
     };
 
-    // Engines retired by the audio thread for the main thread to free.
+    // Engines retired by the audio thread for the main thread to free. A slot whose faded-out
+    // engine finds no room keeps it until there is (retire()), so no engine is ever lost.
     struct RetireRing
     {
-        static constexpr uint32_t capacity = 32;
-        std::array<sbf_engine*, capacity> items{};
+        static constexpr uint32_t size = 32;
+        std::array<sbf_engine*, size> items{};
+        uint32_t capacity = size; // the tests lower it to reach the wait
         std::atomic<uint32_t> head{0}, tail{0};
         uint32_t space() const { return capacity - (head.load(std::memory_order_relaxed) - tail.load(std::memory_order_acquire)); }
         void push(sbf_engine* e) // audio; callers check space()
@@ -301,7 +303,7 @@ namespace
                 auto& s = slots[i];
                 if(s.ringing) { s.ringing = false; contexts[i].users.fetch_sub(1, std::memory_order_release); }
                 if(s.engine) sbf_panic(s.engine);
-                if(s.fading) { if(retired.space()) retired.push(s.fading); else sbf_panic(s.fading); s.fading = nullptr; }
+                s.fadeLeft = 0; retire(s);
                 s.cur.pos = s.old.pos = F; s.quiet = 0; s.exprGain = 1.0;
                 s.swell = 127;
                 if(s.engine) sbf_control(s.engine, swellId, s.swell);
@@ -335,13 +337,20 @@ namespace
             sbf_midi(s.engine, m, 3);
         }
 
+        // Audio thread: a slot's faded-out engine goes to the main thread once the ring has room.
+        void retire(Slot& s)
+        {
+            if(!s.fading || s.fadeLeft || !retired.space()) return;
+            retired.push(s.fading); s.fading = nullptr; wantCallback = true;
+        }
         // Audio thread: adopts engines the main thread built for pinned slots.
         void adoptPending()
         {
             for(uint32_t i = 0; i < contextCapacity; ++i)
             {
                 auto& s = slots[i];
-                if(contexts[i].users.load(std::memory_order_acquire) == 0) continue;
+                if(contexts[i].users.load(std::memory_order_acquire) == 0) continue; // unpinned: the main thread's
+                retire(s);
                 if(s.fading || retired.space() < 2 || !s.pending.load(std::memory_order_relaxed)) continue;
                 auto* next = s.pending.exchange(nullptr, std::memory_order_acquire);
                 if(!next) continue;
@@ -546,18 +555,18 @@ namespace
                         float peak = 0;
                         for(uint32_t j = 0; j < F; ++j) peak = std::max({peak, std::fabs(s.cur.l[j]), std::fabs(s.cur.r[j])});
                         keys = sbf_keys_down(s.engine) > 0;
-                        s.quiet = (peak < quietPeak && !keys && !s.fading) ? s.quiet + 1 : 0;
+                        s.quiet = (peak < quietPeak && !keys && !s.fadeLeft) ? s.quiet + 1 : 0;
                     }
                     double l = s.cur.l[s.cur.pos], r = s.cur.r[s.cur.pos];
                     ++s.cur.pos;
-                    if(s.fading)
+                    if(s.fadeLeft)
                     {
                         if(s.old.pos == F) { sbf_render(s.fading, s.old.l, s.old.r); s.old.pos = 0; }
                         const double g = double(s.fadeLeft) / double(fadeFrames);
                         l = l * (1 - g) + s.old.l[s.old.pos] * g;
                         r = r * (1 - g) + s.old.r[s.old.pos] * g;
                         ++s.old.pos;
-                        if(--s.fadeLeft == 0) { retired.push(s.fading); s.fading = nullptr; wantCallback = true; }
+                        if(--s.fadeLeft == 0) retire(s);
                     }
                     s.level += (target - s.level) * levelGlide;
                     if(choking) g = gainAt(k);
@@ -916,6 +925,7 @@ const clap_plugin_descriptor_t descriptor = {
 
 uint64_t voicesFinished(const clap_plugin_t* p) { return self(p).finished; }
 uint64_t enginesShared(const clap_plugin_t* p) { return self(p).shared; }
+void retireCapacity(const clap_plugin_t* p, uint32_t n) { self(p).retired.capacity = std::clamp<uint32_t>(n, 1, RetireRing::size); }
 
 const clap_plugin_t* create(const clap_host_t* host)
 {
