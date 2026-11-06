@@ -102,7 +102,7 @@ item gets a test in `oscairn/tests/` unless it says otherwise.
 | 17 | Every sample rate sounds the same | 44.1/48/88.2/96/192 kHz: tonewheel pitch, Leslie rotor speeds, vibrato rate, key click and percussion decay times measured from renders | Rate test with tolerances; listening files at each rate |
 | 18 | Oscairn host tests | `oscairn-plugin-check`, `oscairn-render`, worker variants | Run from a local Oscairn build; results in section 10 |
 | 19 | Pitch bend, mod wheel, expression | Organs do not bend (bend ignored; decision 4); mod wheel switches the Leslie fast/slow; CC 11 is the swell (expression) pedal, per channel | Tests |
-| 20 | Instant Performance changes (`oscairn.sound-snapshots/draft-1`) | The SDK's `prepareSnapshot` from the same `readPatch` (main-thread safe: it fills a patch nobody holds) and `buildPreset`, which builds each sound's engine; a sound whose configuration another sound has copies that engine's tone wheels. Eight contexts (decision 16) | `snapshots`, `shared-wheels`, `threads`; done in session 4 |
+| 20 | Instant Performance changes (`oscairn.sound-snapshots/draft-2`) | The SDK's `prepareSnapshot` from the same `readPatch` (main-thread safe: it fills a patch nobody holds) and `buildPreset`, which builds each sound's engine; a sound whose configuration another sound has copies that engine's tone wheels. `setRingOut`: a sound no channel selects renders into the host's ring-out buffer when given one. Eight contexts (decision 16) | `snapshots`, `shared-wheels`, `threads`; done in session 4 |
 
 ### 4.1 Per-key fades
 
@@ -253,9 +253,11 @@ Decided by Jacob (2026-11-02, and 12–14 and the vendor on 2026-11-05) are mark
     change (Oscairn measures CPU and memory per version). setBfree 0.2.0 (session 2: click,
     release, choke, presets as sounds); setBfree Leslie 0.1.0. Session 3: setBfree 0.3.0 and
     setBfree Leslie 0.2.0 (the horn at high rates, the cabinet clamp, Mix). Session 4: setBfree
-    0.4.0 (snapshots prepared beside); the Leslie unchanged at 0.2.0.
+    0.4.0 (snapshots prepared beside, draft 1), then 0.4.1 (draft 2, the ring-out buffer: Oscairn
+    no longer reads draft 1); the Leslie unchanged at 0.2.0.
 16. **Instant Performance changes — proposed (session 4), for Jacob to confirm:** offer
-    `oscairn.sound-snapshots/draft-1`, so Oscairn prepares the next Performance's organ sounds
+    `oscairn.sound-snapshots/draft-2` (with the ring-out buffer, so outgoing sounds ring out
+    through the outgoing Performance's chain), so Oscairn prepares the next Performance's organ sounds
     beside the playing ones instead of loading a new instance. Each prepared sound still owns a
     whole engine (decision 3); to keep preparing fast, a new engine whose configuration (the
     configuration parameters, as setBfree configuration text) matches the last engine built for
@@ -549,9 +551,10 @@ new section 13, the horn at 44.1–192 kHz as now and as upstream's (`-before`).
 ### Session 4 (2026-11-05): instant Performance changes
 
 Oscairn read at `eecdee4` (`oscairn/oscairn` main, after `e4a0ef8` and `347b2fc`; the local
-clone could not pull over SSH, `git ls-remote` over HTTPS confirmed main was `eecdee4`). Its SDK
-headers re-vendored unchanged from that commit (`sound-contexts.h`, `sound-contexts-plugin.hpp`
-changed). Decision 16 is proposed in section 9; checklist item 20 added in section 4.
+clone could not pull over SSH, `git ls-remote` over HTTPS confirmed main was `eecdee4`), and later
+in the session at `2d1424a`, which moved the extension to draft 2 (`858263b`, the ring-out
+buffer) and no longer reads draft 1. The SDK headers were re-vendored unchanged from each
+(`sound-contexts.h` and `sound-contexts-plugin.hpp` changed both times). Decision 16 is proposed in section 9; checklist item 20 added in section 4.
 
 **Engine change 11** (`src/tonegen.c`, `oscairn/engine.c`): `sbf_create_like(rate, config,
 like)` creates an engine whose tone wheels' waves are copied from `like`'s, which must have the
@@ -562,9 +565,15 @@ organ keeps, per slot, the last engine it built and that engine's configuration 
 only; an engine stays alive until its slot is rebuilt or discarded) and uses one of the same
 configuration as the donor; only its waves are read, which never change, so it may be playing.
 
-**Commits:** `ef5a3c5` (headers), `8fd3b20` (shared tone wheels), `5700af0` (the extension),
-`987eca8` (setBfree 0.4.0), `37978aa` (the snapshots test rings out a prepared sound, not the
-Default, which can never be discarded and so could not show a refusal).
+**Commits:** `ef5a3c5` (headers at `eecdee4`), `8fd3b20` (shared tone wheels), `5700af0` (the
+extension, draft 1), `987eca8` (setBfree 0.4.0), `37978aa` (the snapshots test rings out a
+prepared sound, not the Default, which can never be discarded and so could not show a refusal);
+then for draft 2: `6ade7f9` (headers at `2d1424a`), `abc0f1c` (the ring-out buffer), `baa179d`
+(setBfree 0.4.1), `f60fb8a` (the `shared-wheels` time check in CPU time, see the gates).
+
+**Ring-out (draft 2):** given a buffer by `ring_out` just before a `process()`, `render` adds each
+sound the SDK's `retiring(slot)` names (no channel selects it) into it instead of the main
+output; the SDK forgets the buffer after that `process()`. Without one, nothing changes.
 
 **Tests** (each new one fails with its change undone):
 `shared-wheels`: a sound with the Default's configuration is built from its tone wheels (the
@@ -579,7 +588,11 @@ one alone, sample for sample; the outgoing sound refuses discard while its key i
 its tail rings, then reports idle (about 3 s after its key) and goes; the Default is never
 discarded; a bad snapshot, and one needing two contexts where one is free, add nothing and say
 why. Fails without the `get_extension` line, and (from `37978aa`) with the tail's pin dropped.
-`threads` also prepares a snapshot while rendering (TSan).
+From `abc0f1c` it also holds a key on a prepared sound through a change with a ring-out buffer
+given to every `process()`: before the cue the buffer stays silent and the main output is that
+sound; after it, through the key's release and tail, the main output is the incoming sound alone
+and the buffer the outgoing sound alone (0.0017 rms of tail), sample for sample. Fails with
+`render` ignoring `retiring`. `threads` also prepares a snapshot while rendering (TSan).
 
 **Switch times** (Release, macOS arm64, on a machine also running other builds, load average
 about 60, so times are noisy): preparing that two-sound snapshot beside took 47-52 ms in five
@@ -594,15 +607,24 @@ each switch the output matched a fresh load of that Performance sample for sampl
 first switch with the build before the extension (`ef5a3c5`) loaded two new instances: 2268 ms
 (cold open in that run 2513 ms; later switches there took warm instances in 12-17 ms).
 
-**Gates on each committed tree** (worktrees, macOS arm64): release tests (33, 34, 35, 35, 35),
-ASan and UBSan, TSan (the same counts), all passed; the stock gate 6 of 6 identical on each.
+**Gates on each committed tree** (worktrees, macOS arm64): release tests (33, 34, 35, 35, 35,
+then 35 on each of the four draft-2 commits), ASan and UBSan, TSan (the same counts), all passed,
+except once: TSan on `abc0f1c` failed `shared-wheels` at its wall-clock comparison (under TSan the
+copy is about 3x faster, not 17x, and the machine's load average was over 100); the same suite
+on the same build passed when run again, and `f60fb8a` times that check in the thread's CPU time.
+The stock gate 6 of 6 identical on each.
 **CI** on `ef5a3c5`, `8fd3b20`, `5700af0` and `987eca8`: all six jobs passed on each (Linux
-x86_64, Linux ARM64, macOS arm64, ASan+UBSan, TSan, upstream's own build), and on `37978aa`.
+x86_64, Linux ARM64, macOS arm64, ASan+UBSan, TSan, upstream's own build), and on `37978aa`,
+`d3cb50b` (the plan), `6ade7f9`, `abc0f1c`, `baa179d` and `f60fb8a`.
 
-**Oscairn host tests** (Oscairn `eecdee4` built outside its repo, Release, macOS arm64; plugin
-from `987eca8`): `oscairn-plugin-check … org.oscairn.setbfree synth --param 3=2` PASSED in the
-engine and with `OSCAIRN_PLUGIN_WORKER`; `… org.oscairn.setbfree.leslie effect --param 1=2`
-PASSED in the engine. The organ's reopened render differs by rms 0.00017 (its Leslie had turned).
+**Oscairn host tests** (Oscairn built outside its repo, Release, macOS arm64): at `eecdee4` with
+the plugin from `987eca8`, and again at `2d1424a` with the plugin from `f60fb8a` (0.4.1):
+`oscairn-plugin-check … org.oscairn.setbfree synth --param 3=2` PASSED in the engine and with
+`OSCAIRN_PLUGIN_WORKER`; `… org.oscairn.setbfree.leslie effect --param 1=2` PASSED in the engine.
+The organ's reopened render differs by rms 0.00017 (its Leslie had turned). The Session probe at
+`2d1424a` with `f60fb8a`'s plugin: D -> E with a key held 16.0 ms, E -> D 14.7 ms, D -> E again
+15.5 ms, each beside (0 loaded), all its checks passed. Whether Oscairn hands this organ its
+ring-out buffer during that switch is not checked by the probe (the plugin's own test is).
 
 ## 11. Known differences
 
