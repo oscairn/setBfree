@@ -479,7 +479,8 @@ namespace
         }
 
         // Renders [from, to): each sounding engine, its crossfade, its level. A retiring sound goes to
-        // the host's ring-out buffer when it gave one (oscairn.sound-snapshots draft 2).
+        // the ring-out channels the host gave it (oscairn.sound-snapshots draft 3): a sound choked at a
+        // second change fades there with its keys, tail and all, since its gain is its keys' amplitude.
         void render(const clap_process_t* process, uint32_t from, uint32_t to)
         {
             float* mainL = process->audio_outputs[0].data32[0];
@@ -496,9 +497,9 @@ namespace
                 auto& s = slots[i];
                 if(!s.ringing) continue;
                 if(!s.engine) { endTail(i); continue; }
-                const bool retiring = this->retiring(i);
-                outL = retiring ? ringOut[0] : mainL;
-                outR = retiring ? ringOut[1] : mainR;
+                float* const* ring = retiring(i);
+                outL = ring ? ring[0] : mainL;
+                outR = ring ? ring[1] : mainR;
                 // A key's volume expression or choke lowers the sound only where no other key of it is
                 // louder: its gain is its keys' largest amplitude, sample by sample while a choke fades.
                 std::array<uint16_t, voiceCapacity> own{};
@@ -543,7 +544,8 @@ namespace
                     outL[from + k] += float(l * a);
                     outR[from + k] += float(r * a);
                 }
-                if(s.quiet >= quietFragments) endTail(i);
+                // Its tail has ended when it is quiet, or muted: its last key choked or at volume 0.
+                if(s.quiet >= quietFragments || s.exprGain == 0) endTail(i);
             }
             // Keys whose release has rendered end.
             for(auto& v : voices)
@@ -829,8 +831,9 @@ namespace
 
     const clap_plugin_state_t stateExt = {Organ::saveSnapshot, Organ::loadSnapshot};
     const oscairn_plugin_sound_contexts_t soundContextsExt = {Organ::capacity, Organ::get, Organ::prepare, Organ::select, Organ::discard, &stateExt, Organ::preparePreset};
-    // A snapshot's sounds prepared beside the playing ones (readPatch and buildPreset run on the main thread while rendering).
-    const oscairn_plugin_sound_snapshots_t soundSnapshotsExt = {Organ::prepareSnapshot, Organ::setRingOut};
+    // A snapshot's sounds prepared beside the playing ones (readPatch and buildPreset run on the main thread while rendering);
+    // retiring sounds ring out into the host's buffer, and a second change chokes the sounds still retiring from the first.
+    const oscairn_plugin_sound_snapshots_t soundSnapshotsExt = {Organ::prepareSnapshot, Organ::setRingOut, Organ::chokeRetiring};
 
     // oscairn.memory: one engine per prepared sound; the first sound is the context, the rest
     // of the state's sounds are counted as shared.

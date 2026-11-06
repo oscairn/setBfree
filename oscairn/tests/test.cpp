@@ -1196,7 +1196,7 @@ namespace
         CHECK(info.idle && m->discard(mixed.p, outgoing));
         CHECK(!m->discard(mixed.p, 0)); // the Default is never discarded
 
-        // With a ring-out buffer (draft 2) the retiring sound's key and tail go there, not to the
+        // With a ring-out buffer (draft 3) the retiring sound's key and tail go there, not to the
         // main output: the main output is the incoming sound alone, the buffer the outgoing alone.
         {
             Instance mixed(48000), old(48000), fresh(48000);
@@ -1225,6 +1225,62 @@ namespace
             CHECK(main.left == alone.left && main.right == alone.right && rms(alone.left, 0, 48000) > 1e-3);
             CHECK(ring.left == out.left && ring.right == out.right && rms(out.left, 24000, 48000) > 1e-5); // the tail, after the key
             std::printf("  ring-out: the outgoing tail at %.2g rms in the buffer, none in the main output\n", rms(ring.left, 24000, 48000));
+        }
+
+        // A second change while the first's sound still rings out: choke_retiring fades that sound,
+        // key and tail, into channels 2 and 3 over the choke's 3 ms, and it reports idle once faded;
+        // the sound the second change retires takes channels 0 and 1, the incoming one the main output.
+        {
+            std::string T; // one sound, a 2' registration on the Default
+            {
+                Instance t(48000);
+                t.at(0).param(param("Upper 16'"), 0).param(param("Upper 2'"), 8);
+                t.render(512, 512);
+                T = t.save();
+            }
+            Instance mixed(48000), old(48000), sAlone(48000), tAlone(48000);
+            Output ring, choked;
+            mixed.ringOut = &ring;
+            mixed.chokeOut = &choked;
+            CHECK(sAlone.load(S) && tAlone.load(T));
+            uint32_t outgoing = 0;
+            for(auto* i : {&mixed, &old})
+            {
+                auto* ic = i->ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+                outgoing = ic->prepare(i->p, "bright", bright, 2, nullptr, nullptr, nullptr, 0);
+                CHECK(outgoing != CLAP_INVALID_ID && ic->select(i->p, outgoing, -1));
+                i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 48, 9);
+                i->render(4800, 480);
+            }
+            CHECK(prepareSnapshot(mixed, S, selected)); // the first change, a key held on its sound too
+            cue(mixed, selected);
+            for(auto* i : {&mixed, &sAlone}) i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 72, 10);
+            for(auto* i : {&mixed, &old, &sAlone}) i->render(4800, 480);
+            uint32_t selected2[16];
+            CHECK(prepareSnapshot(mixed, T, selected2)); // the second change
+            CHECK(x->choke_retiring(mixed.p));
+            cue(mixed, selected2);
+            ring = {}; choked = {};
+            for(auto* i : {&mixed, &tAlone}) i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 76, 11);
+            old.at(0).note(CLAP_EVENT_NOTE_OFF, 0, 48, 9); // a choked key lets go at once: the same engine output, before the fade
+            auto* m = mixed.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+            auto brightInfo = [&] { for(uint32_t slot = 0; slot < 8; ++slot) if(m->get(mixed.p, slot, &info) && info.id == outgoing) return true; return false; };
+            Output main;
+            for(uint32_t block = 0; block < 100; ++block)
+            {
+                mixed.process(480, &main);
+                if(block == 1) CHECK(brightInfo() && info.idle); // faded: idle at once
+            }
+            const auto t = tAlone.render(48000, 480), s = sAlone.render(48000, 480), b = old.render(48000, 480);
+            CHECK(main.left == t.left && main.right == t.right && rms(t.left, 0, 48000) > 1e-3);
+            CHECK(ring.left == s.left && ring.right == s.right && rms(s.left, 0, 48000) > 1e-3);
+            const uint32_t fade = 144; // 3 ms
+            double err = 0, after = 0;
+            for(uint32_t k = 0; k < 48000; ++k)
+                if(k < fade) err = std::max(err, std::fabs(double(choked.left[k] - b.left[k] * float(fade - k) / float(fade))));
+                else after = std::max(after, std::fabs(double(choked.left[k])));
+            CHECK(err < 1e-6 && after == 0 && rms(b.left, 0, fade) > 1e-3);
+            CHECK(brightInfo() && info.idle && m->discard(mixed.p, outgoing));
         }
 
         // All or nothing: a bad snapshot, or too few free contexts, adds nothing and says why.
