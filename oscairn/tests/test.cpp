@@ -68,6 +68,36 @@ namespace
 
     constexpr uint32_t F_ = SBF_FRAGMENT;
 
+    // oscairn.sound-snapshots: a snapshot's sounds prepared beside the playing ones.
+    bool prepareSnapshot(Instance& o, const std::string& snapshot, uint32_t* selected, char* message = nullptr, uint32_t capacity = 0)
+    {
+        struct Reader { const std::string* data; size_t pos = 0; } r{&snapshot};
+        clap_istream_t in{&r, [](const clap_istream_t* s, void* buffer, uint64_t size) -> int64_t {
+            auto* r = static_cast<Reader*>(s->ctx);
+            const auto n = std::min<size_t>(size, r->data->size() - r->pos);
+            std::memcpy(buffer, r->data->data() + r->pos, n);
+            r->pos += n;
+            return int64_t(n);
+        }};
+        auto* x = o.ext<oscairn_plugin_sound_snapshots_t>(OSCAIRN_EXT_SOUND_SNAPSHOTS);
+        return x && x->prepare(o.p, &in, selected, message, capacity);
+    }
+    uint32_t preparedCount(Instance& o)
+    {
+        auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        oscairn_sound_context_info_t info;
+        uint32_t n = 0;
+        for(uint32_t slot = 0; slot < c->capacity(o.p); ++slot) n += c->get(o.p, slot, &info);
+        return n;
+    }
+    // Selects a prepared snapshot's sounds as the host does at the cue.
+    void cue(Instance& o, const uint32_t* selected)
+    {
+        auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        if(std::all_of(selected, selected + 16, [&](uint32_t id) { return id == selected[0]; })) CHECK(c->select(o.p, selected[0], -1));
+        else for(int16_t ch = 0; ch < 16; ++ch) CHECK(c->select(o.p, selected[ch], ch));
+    }
+
     // Metadata: unique IDs, ranges, module paths, value text both ways, hints.
     void metadata()
     {
@@ -575,6 +605,7 @@ namespace
     // (run under ThreadSanitizer in CI).
     void threads()
     {
+        const auto snapshot = Instance(48000).save(); // one sound, prepared beside while rendering
         Instance o(48000);
         auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
         const auto tuning = param("Tuning"), drawbar = param("Upper 8'");
@@ -600,7 +631,7 @@ namespace
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
         });
-        uint32_t prepared = 0, discarded = 0;
+        uint32_t prepared = 0, discarded = 0, beside = 0;
         std::vector<uint32_t> ids;
         for(int round = 0; round < 300; ++round)
         {
@@ -611,6 +642,8 @@ namespace
                 const oscairn_sound_parameter_t v[] = {{drawbar, double(round % 9)}};
                 const auto id = c->prepare(o.p, "t", v, 1, nullptr, nullptr, nullptr, 0);
                 if(id != CLAP_INVALID_ID) { ids.push_back(id); ++prepared; }
+                uint32_t selected[16];
+                if(round % 10 == 0 && prepareSnapshot(o, snapshot, selected)) { ids.push_back(selected[0]); ++prepared; ++beside; }
             }
             if(!ids.empty())
             {
@@ -631,8 +664,8 @@ namespace
         stop = true;
         audio.join();
         o.service();
-        std::printf("  %u blocks, %u prepared, %u discarded\n", blocks.load(), prepared, discarded);
-        CHECK(blocks > 100 && prepared >= 4 && discarded == prepared);
+        std::printf("  %u blocks, %u prepared (%u from a snapshot), %u discarded\n", blocks.load(), prepared, beside, discarded);
+        CHECK(blocks > 100 && prepared >= 4 && beside >= 1 && discarded == prepared);
     }
 
     // Nothing on stdout or stderr from building engines or playing (it is the host's).
@@ -1059,6 +1092,92 @@ namespace
         std::printf("  %zu sounds prepared from presets, each as its program\n", found.presets.size());
     }
 
+    void snapshots()
+    {
+        auto* x = Instance(48000).ext<oscairn_plugin_sound_snapshots_t>(OSCAIRN_EXT_SOUND_SNAPSHOTS);
+        CHECK(x && x->prepare);
+        if(!x) return;
+        // S: a flute on the Default (channel 1 and up) and square wheels with percussion on channel 2.
+        std::string S;
+        {
+            Instance s(48000);
+            auto* c = s.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+            s.at(0).param(param("Upper 16'"), 0).param(param("Upper 4'"), 8);
+            s.render(512, 512);
+            const oscairn_sound_parameter_t square[] = {{param("Wheel shape"), 2}, {param("Percussion"), 1}};
+            CHECK(c->select(s.p, c->prepare(s.p, "square", square, 2, nullptr, nullptr, nullptr, 0), 1));
+            s.render(512, 512);
+            S = s.save();
+        }
+        auto play = [](Instance& i, uint32_t frames) {
+            i.at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 1).note(CLAP_EVENT_NOTE_ON, 1, 67, 2);
+            i.at(9600).note(CLAP_EVENT_NOTE_OFF, 0, 60, 1);
+            return i.render(frames, 480);
+        };
+
+        // Prepared beside the default sound and selected, S plays as S loaded.
+        Instance loaded(48000), beside(48000);
+        CHECK(loaded.load(S));
+        loaded.render(512, 512);
+        beside.render(512, 512);
+        uint32_t selected[16];
+        const auto t0 = std::chrono::steady_clock::now();
+        CHECK(prepareSnapshot(beside, S, selected));
+        const double prepareMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        CHECK(preparedCount(beside) == 3);
+        CHECK(selected[0] != 0 && selected[1] != 0 && selected[0] != selected[1]);
+        for(int ch = 2; ch < 16; ++ch) CHECK(selected[ch] == selected[0]);
+        auto* c = beside.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        oscairn_sound_context_info_t info;
+        for(uint32_t slot = 1; slot < 3; ++slot) CHECK(c->get(beside.p, slot, &info) && info.selected_channels == 0); // nothing selected yet
+        cue(beside, selected);
+        const auto t1 = std::chrono::steady_clock::now();
+        beside.process(480);
+        const double cueMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+        loaded.render(480, 480);
+        const auto a = play(loaded, 48000), b = play(beside, 48000);
+        CHECK(a.left == b.left && a.right == b.right && rms(a.left, 0, 48000) > 1e-3);
+        std::printf("  2 sounds prepared beside in %.1f ms; the cue's block (480 frames) took %.2f ms\n", prepareMs, cueMs);
+
+        // A key held on the outgoing sound rings out beside the incoming one, which plays as alone.
+        Instance mixed(48000), old(48000), fresh(48000);
+        CHECK(fresh.load(S));
+        for(auto* i : {&mixed, &old}) { i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 48, 9); i->render(4800, 480); }
+        fresh.render(4800, 480);
+        CHECK(prepareSnapshot(mixed, S, selected));
+        cue(mixed, selected);
+        for(auto* i : {&mixed, &old, &fresh}) i->render(480, 480);
+        for(auto* i : {&mixed, &fresh}) i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 72, 10);
+        for(auto* i : {&mixed, &old}) i->at(4800).note(CLAP_EVENT_NOTE_OFF, 0, 48, 9);
+        auto* m = mixed.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        CHECK(!m->discard(mixed.p, selected[0]) && !m->discard(mixed.p, selected[1])); // selected
+        const auto y = mixed.render(2400, 480).left, o1 = old.render(2400, 480).left, f1 = fresh.render(2400, 480).left;
+        bool sum = true;
+        for(size_t i = 0; i < y.size(); ++i) sum &= y[i] == o1[i] + f1[i];
+        CHECK(sum && rms(o1, 0, 2400) > 1e-3 && rms(f1, 0, 2400) > 1e-3);
+        CHECK(m->get(mixed.p, 0, &info) && info.active_voices == 1 && !info.idle);
+        // The old sound is retired only once its key and tail have ended: then it can go, and the
+        // incoming Default (not ID 0) with it once unselected.
+        mixed.render(4800, 480);
+        CHECK(m->get(mixed.p, 0, &info) && info.active_voices == 0 && !info.idle); // its tail rings
+        uint32_t frames = 0;
+        while(!(m->get(mixed.p, 0, &info) && info.idle) && frames < 48000 * 10) frames += 4800, mixed.render(4800, 480);
+        std::printf("  the outgoing sound's tail ended %.1f s after its key\n", (frames + 4800 + 2400) / 48000.0);
+        CHECK(info.idle && !m->discard(mixed.p, 0)); // the Default is never discarded
+
+        // All or nothing: a bad snapshot, or too few free contexts, adds nothing and says why.
+        char message[128] = "";
+        Instance full(48000);
+        CHECK(!prepareSnapshot(full, "oscairn-organ-1 nonsense", selected, message, sizeof(message)) && *message);
+        auto* f = full.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        for(int i = 0; i < 6; ++i) CHECK(f->prepare(full.p, "filler", nullptr, 0, nullptr, nullptr, nullptr, 0) != CLAP_INVALID_ID);
+        *message = 0;
+        CHECK(!prepareSnapshot(full, S, selected, message, sizeof(message)) && *message && preparedCount(full) == 7);
+        std::printf("  refused: %s\n", message);
+        CHECK(f->discard(full.p, 6));
+        CHECK(prepareSnapshot(full, S, selected) && preparedCount(full) == 8);
+    }
+
     // A sound whose configuration another sound already has gets its engine's tone wheels
     // copied from that one's, and sounds as one built from scratch.
     void sharedWheels()
@@ -1116,6 +1235,7 @@ namespace
         {"overdrive", overdrive},
         {"presets", presets},
         {"shared-wheels", sharedWheels},
+        {"snapshots", snapshots},
         {"memory", memory},
         {"startup", startup},
         {"rates", rates},

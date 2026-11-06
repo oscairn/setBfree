@@ -622,7 +622,7 @@ namespace
             patch.values = programValues(g);
             return true;
         }
-        // prepare_preset: the helper reads the preset into a new sound; its engine is built here.
+        // prepare_preset and a snapshot prepared beside: the helper reads the sound; its engine is built here.
         bool buildPreset(Context& c, std::string& error)
         {
             if(install(c)) return true;
@@ -814,6 +814,8 @@ namespace
 
     const clap_plugin_state_t stateExt = {Organ::saveSnapshot, Organ::loadSnapshot};
     const oscairn_plugin_sound_contexts_t soundContextsExt = {Organ::capacity, Organ::get, Organ::prepare, Organ::select, Organ::discard, &stateExt, Organ::preparePreset};
+    // A snapshot's sounds prepared beside the playing ones (readPatch and buildPreset run on the main thread while rendering).
+    const oscairn_plugin_sound_snapshots_t soundSnapshotsExt = {Organ::prepareSnapshot};
 
     // oscairn.memory: one engine per prepared sound; the first sound is the context, the rest
     // of the state's sounds are counted as shared.
@@ -911,6 +913,7 @@ const clap_plugin_t* create(const clap_host_t* host)
     s->plugin.process = process;
     s->plugin.get_extension = [](const clap_plugin_t*, const char* id) -> const void* {
         if(!std::strcmp(id, OSCAIRN_EXT_SOUND_CONTEXTS)) return &soundContextsExt;
+        if(!std::strcmp(id, OSCAIRN_EXT_SOUND_SNAPSHOTS)) return &soundSnapshotsExt;
         if(!std::strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &audioPortsExt;
         if(!std::strcmp(id, CLAP_EXT_NOTE_PORTS)) return &notePortsExt;
         if(!std::strcmp(id, CLAP_EXT_PARAMS)) return &paramsExt;
