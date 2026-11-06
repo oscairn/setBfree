@@ -311,7 +311,48 @@ sbf_release_frames (const sbf_engine* e)
 #endif
 }
 
-#ifndef SETBFREE_STOCK /* the rotor needs whirlRamp, which upstream does not have */
+#ifndef SETBFREE_STOCK
+/* Empties the Leslie's delay lines and filters. */
+static void
+clearWhirl (struct b_whirl* w)
+{
+	memset (w->HLbuf, 0, sizeof (w->HLbuf));
+	memset (w->HRbuf, 0, sizeof (w->HRbuf));
+	memset (w->DLbuf, 0, sizeof (w->DLbuf));
+	memset (w->DRbuf, 0, sizeof (w->DRbuf));
+	memset (w->adx0, 0, sizeof (w->adx0));
+	memset (w->adx1, 0, sizeof (w->adx1));
+	memset (w->adx2, 0, sizeof (w->adx2));
+	memset (w->z, 0, sizeof (w->z));
+	/* the filters' two state words after their coefficients (whirl.h, filterCoeff) */
+	w->drfL[z0] = w->drfL[z1] = w->drfR[z0] = w->drfR[z1] = 0;
+	w->hafw[z0] = w->hafw[z1] = w->hbfw[z0] = w->hbfw[z1] = 0;
+}
+
+void
+sbf_clear_tail (sbf_engine* e)
+{
+	struct b_tonegen* t = e->inst.synth;
+	struct b_reverb*  r = e->inst.reverb;
+	midi_panic (&e->inst);
+	/* The releases still under way leave the active list as a finished one does in
+	 * oscGenerateFragment (every key is up, so every oscillator there is releasing). */
+	for (int i = 0; i < t->activeOscLEnd; ++i) {
+		struct _oscillator* o = &t->oscillators[t->activeOscList[i]];
+		o->aclPos    = -1;
+		o->envLeft   = 0;
+		o->releasing = 0;
+		o->rflags    = 0;
+	}
+	t->activeOscLEnd = 0;
+	memset (t->inst_vibrato.vibBuffer, 0, sizeof (t->inst_vibrato.vibBuffer));
+	for (int i = 0; i < RV_NZ; ++i)
+		memset (r->delays[i], 0, (size_t)(r->endp[i] - r->delays[i] + 1) * sizeof (float));
+	r->yy1 = r->y_1 = 0;
+	clearWhirl (e->inst.whirl);
+}
+
+/* the rotor needs whirlRamp, which upstream does not have */
 struct sbf_rotor {
 	void*           state;
 	void*           midicfg; /* the control functions whirl.c registers */
@@ -401,18 +442,7 @@ sbf_rotor_follow (sbf_rotor* r, const sbf_rotor* from)
 void
 sbf_rotor_clear (sbf_rotor* r)
 {
-	struct b_whirl* w = r->whirl;
-	memset (w->HLbuf, 0, sizeof (w->HLbuf));
-	memset (w->HRbuf, 0, sizeof (w->HRbuf));
-	memset (w->DLbuf, 0, sizeof (w->DLbuf));
-	memset (w->DRbuf, 0, sizeof (w->DRbuf));
-	memset (w->adx0, 0, sizeof (w->adx0));
-	memset (w->adx1, 0, sizeof (w->adx1));
-	memset (w->adx2, 0, sizeof (w->adx2));
-	memset (w->z, 0, sizeof (w->z));
-	/* the filters' two state words after their coefficients (whirl.h, filterCoeff) */
-	w->drfL[z0] = w->drfL[z1] = w->drfR[z0] = w->drfR[z1] = 0;
-	w->hafw[z0] = w->hafw[z1] = w->hbfw[z0] = w->hbfw[z1] = 0;
+	clearWhirl (r->whirl);
 }
 
 /* The speeds move once per fragment, as in the organ, whatever lengths the caller renders. */

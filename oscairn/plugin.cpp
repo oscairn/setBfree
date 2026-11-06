@@ -575,7 +575,8 @@ namespace
                     outR[from + k] += float(r * a);
                 }
                 // Its tail has ended when it is quiet, or muted: its last key choked or at volume 0.
-                if(s.quiet >= quietFragments || s.exprGain == 0) endTail(i);
+                if(s.quiet >= quietFragments) endTail(i);
+                else if(s.exprGain == 0) endTail(i, true);
             }
             // Keys whose release has rendered end.
             for(auto& v : voices)
@@ -588,10 +589,12 @@ namespace
                 eventTime = at;
             }
         }
-        void endTail(uint32_t i)
+        void endTail(uint32_t i, bool muted = false)
         {
             auto& s = slots[i];
             for(const auto& v : voices) if(v.active && v.context == i) return;
+            // A muted tail is still in the engine: cleared, so the sound's next key starts clean.
+            if(muted) { sbf_clear_tail(s.engine); if(s.fading) sbf_clear_tail(s.fading); s.old.pos = F; }
             s.ringing = false; s.quiet = 0; s.cur.pos = F;
             contexts[i].users.fetch_sub(1, std::memory_order_release);
         }

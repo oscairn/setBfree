@@ -600,6 +600,33 @@ namespace
         CHECK(rb < ra * 0.5 && rb > ra * 0.05);
     }
 
+    // A sound muted (its last key choked, or let go at volume 0) keeps nothing of its tail: its
+    // reverb and Leslie start clean with its next key. That key has every drawbar out, so what
+    // sounds is the old tail.
+    void muted()
+    {
+        for(int choked = 0; choked < 2; ++choked)
+        {
+            Instance o(48000);
+            o.at(0).param(param("Reverb"), 1).param(param("Leslie speed"), 2);
+            o.render(480, 480);
+            o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 69, 1);
+            o.render(48000, 480);
+            if(choked) o.at(0).note(CLAP_EVENT_NOTE_CHOKE, 0, 69, 1);
+            else o.at(0).expression(CLAP_NOTE_EXPRESSION_VOLUME, 0, 69, 1, 0).at(0).note(CLAP_EVENT_NOTE_OFF, 0, 69, 1);
+            auto r = o.render(4800, 480);
+            CHECK(noteEnds(r.events, 1) == 1 && rms(r.left, 2400, 4800) == 0); // ended at once
+            for(const char* footage : {"16'", "5 1/3'", "8'", "4'", "2 2/3'", "2'", "1 3/5'", "1 1/3'", "1'"})
+                o.at(0).param(param((std::string("Upper ") + footage).c_str()), 0);
+            o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 69, 2);
+            r = o.render(24000, 480);
+            double peak = 0;
+            for(float x : r.left) peak = std::max(peak, std::fabs(double(x)));
+            std::printf("  %s: the next key, drawbars out, peaks at %.2g\n", choked ? "choked" : "volume 0", peak);
+            CHECK(peak < 1e-5);
+        }
+    }
+
     // A configuration change while a key is held crossfades to the new engine, the key still down.
     void rebuildWhilePlaying()
     {
@@ -1423,6 +1450,7 @@ namespace
         {"snapshots", snapshots},
         {"memory", memory},
         {"retire", retire},
+        {"muted", muted},
         {"reset", reset},
         {"startup", startup},
         {"rates", rates},

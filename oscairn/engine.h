@@ -75,6 +75,11 @@ int sbf_program_get (int pc, sbf_program* out);
 /* Releases every key. */
 void sbf_panic (sbf_engine* e);
 
+/* Releases every key and empties the tail: the released keys' remaining releases, the
+ * vibrato, reverb and Leslie delay lines. The next key starts as on a fresh engine
+ * (the overdrive's 192 samples of history excepted). */
+void sbf_clear_tail (sbf_engine* e);
+
 /* Renders the next SBF_FRAGMENT frames of stereo output. */
 void sbf_render (sbf_engine* e, float* left, float* right);
 
