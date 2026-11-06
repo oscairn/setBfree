@@ -398,6 +398,24 @@ namespace
             std::printf("  %.0f Hz: choked with another key held, fades over %.2f ms, silent %.2f ms after the choke\n", rate, fade, total);
             CHECK(end > onset && fade >= 2 && fade <= 5 && total <= 6);
         }
+
+        // The fade takes its 3 ms whatever the block size: a choke 100 frames into a 4096-frame
+        // block renders as it does in 128-frame blocks, and is silent 5 ms on.
+        std::vector<float> x[2];
+        for(uint32_t block : {128u, 4096u})
+        {
+            Instance o(48000);
+            o.at(0).param(param("Leslie"), 0).param(param("Reverb"), 0);
+            o.render(256, 256);
+            o.service();
+            o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 69, 7);
+            o.render(24576, block);
+            o.at(100).note(CLAP_EVENT_NOTE_CHOKE, 0, 69, 7);
+            x[block == 4096] = o.render(8192, block).left;
+        }
+        double tail = 0;
+        for(size_t i = 100 + 240; i < x[1].size(); ++i) tail = std::max(tail, std::fabs(double(x[1][i])));
+        CHECK(x[0] == x[1] && tail < 1e-4);
     }
 
     // Magnitude of x[from, to) at a frequency (Hann window).

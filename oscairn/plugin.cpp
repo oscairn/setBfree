@@ -499,12 +499,20 @@ namespace
                 const bool retiring = this->retiring(i);
                 outL = retiring ? ringOut[0] : mainL;
                 outR = retiring ? ringOut[1] : mainR;
-                // A key's volume expression or choke lowers the sound only where no other key of it is louder.
-                double g0 = -1, g1 = -1;
-                for(const auto& v : voices)
-                    if(v.active && v.context == i) { g0 = std::max(g0, amplitude(v, 0)); g1 = std::max(g1, amplitude(v, n)); }
-                if(g0 < 0) g0 = g1 = s.exprGain;
-                s.exprGain = g1;
+                // A key's volume expression or choke lowers the sound only where no other key of it is
+                // louder: its gain is its keys' largest amplitude, sample by sample while a choke fades.
+                std::array<uint16_t, voiceCapacity> own{};
+                uint32_t owned = 0;
+                bool choking = false;
+                for(uint32_t vi = 0; vi < voiceCapacity; ++vi)
+                    if(voices[vi].active && voices[vi].context == i) { own[owned++] = uint16_t(vi); choking |= voices[vi].chokeLength != 0; }
+                auto gainAt = [&](uint32_t k) {
+                    double g = 0;
+                    for(uint32_t j = 0; j < owned; ++j) g = std::max(g, amplitude(voices[own[j]], k));
+                    return g;
+                };
+                double g = owned ? gainAt(0) : s.exprGain;
+                s.exprGain = owned ? gainAt(n) : g;
                 const double target = std::pow(10.0, contexts[i].patch.values[iVolume] / 20.0);
                 bool keys = sbf_keys_down(s.engine) > 0;
                 for(uint32_t k = 0; k < n; ++k)
@@ -530,9 +538,10 @@ namespace
                         if(--s.fadeLeft == 0) { retired.push(s.fading); s.fading = nullptr; wantCallback = true; }
                     }
                     s.level += (target - s.level) * levelGlide;
-                    const double g = s.level * (g0 + (g1 - g0) * double(k) / double(n));
-                    outL[from + k] += float(l * g);
-                    outR[from + k] += float(r * g);
+                    if(choking) g = gainAt(k);
+                    const double a = s.level * g;
+                    outL[from + k] += float(l * a);
+                    outR[from + k] += float(r * a);
                 }
                 if(s.quiet >= quietFragments) endTail(i);
             }
