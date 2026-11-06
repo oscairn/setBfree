@@ -542,7 +542,7 @@ const clap_plugin_descriptor_t descriptor = {
     "https://github.com/oscairn/setBfree",
     "",
     "",
-    "0.1.0",
+    "0.2.0",
     "A rotary speaker: setBfree's Leslie by Fredrik Kilander, Will Panther, Robin Gareus and Ken Restivo",
     features,
 };
