@@ -88,7 +88,8 @@ namespace
         return false;
     }
 
-    // The bundle lists both plugins; the effect's parameters are the organ's Leslie parameters.
+    // The bundle lists both plugins; the effect's parameters are the organ's Leslie parameters,
+    // then its own Mix.
     void metadata()
     {
         auto* factory = static_cast<const clap_plugin_factory_t*>(clap_entry.get_factory(CLAP_PLUGIN_FACTORY_ID));
@@ -112,11 +113,24 @@ namespace
         CHECK(params && ui && o.ext<clap_plugin_tail_t>(CLAP_EXT_TAIL) && o.ext<oscairn_plugin_memory_t>(OSCAIRN_EXT_MEMORY));
         uint32_t organLeslie = 0;
         for(const auto& p : organ::params) organLeslie += !std::strncmp(p.module, "Leslie", 6);
-        CHECK(params->count(o.p) == organLeslie - 1); // all but the organ's Leslie switch
+        CHECK(params->count(o.p) == organLeslie); // all but the organ's Leslie switch, and Mix
         for(uint32_t i = 0; i < params->count(o.p); ++i)
         {
             clap_param_info_t info;
             CHECK(params->get_info(o.p, i, &info) && info.id == i + 1);
+            oscairn_param_hint_t hint;
+            CHECK(ui->param_hint(o.p, info.id, &hint) && hint.priority == info.id);
+            if(i + 1 == params->count(o.p))
+            {
+                CHECK(!std::strcmp(info.name, "Mix") && !std::strcmp(info.module, "Leslie") && info.min_value == 0 && info.max_value == 1 &&
+                      info.default_value == 1 && !(info.flags & CLAP_PARAM_IS_STEPPED) && hint.role == OSCAIRN_ROLE_MIX);
+                char text[256];
+                double back;
+                CHECK(params->value_to_text(o.p, info.id, 0.25, text, sizeof(text)) && !std::strcmp(text, "25.0%"));
+                CHECK(params->text_to_value(o.p, info.id, text, &back) && back == 0.25);
+                continue;
+            }
+            CHECK(hint.role == OSCAIRN_ROLE_NONE);
             const auto& same = organ::params[organ::index(info.name)];
             CHECK(!std::strcmp(info.module, same.module) && info.min_value == same.min && info.max_value == same.max && info.default_value == same.def);
             for(double v : {info.min_value, info.default_value, info.max_value})
@@ -127,8 +141,6 @@ namespace
                 params->value_to_text(o.p, info.id, back, again, sizeof(again));
                 CHECK(!std::strcmp(text, again));
             }
-            oscairn_param_hint_t hint;
-            CHECK(ui->param_hint(o.p, info.id, &hint) && hint.priority == info.id);
         }
         clap_param_info_t first;
         params->get_info(o.p, 0, &first);
@@ -181,7 +193,7 @@ namespace
         a.at(0).param(param("Leslie speed"), 2).param(param("Horn fast speed"), 400.125).param(param("Drum filter type"), 5);
         a.render(256, 256);
         const auto saved = a.save();
-        CHECK(saved.rfind("setbfree-leslie-1\n", 0) == 0);
+        CHECK(saved.rfind("setbfree-leslie-2\n", 0) == 0);
         std::vector<float> renders[2];
         for(auto& r : renders)
         {
@@ -197,7 +209,7 @@ namespace
         const auto before = c.save();
         std::string bad = saved;
         bad.replace(bad.find("400.125"), 7, "9999");
-        CHECK(!c.load(bad) && !c.load(saved.substr(0, saved.size() / 2)) && !c.load("setbfree-leslie-0\n"));
+        CHECK(!c.load(bad) && !c.load(saved.substr(0, saved.size() / 2)) && !c.load("setbfree-leslie-1\n"));
         CHECK(c.save() == before);
         CHECK(c.load(saved));
         double v;
@@ -337,6 +349,39 @@ namespace
             std::printf("  %.0f Hz, largest cabinet: %.2g of the energy within 2 ms of a click\n", rate, early / all);
             CHECK(all > 0 && early < 1e-4 * all);
         }
+    }
+
+    // Mix: 0 is the input as it came, both channels; between, the dry and wet in proportion; a
+    // change moves over 10 ms (from the default, 1, at the start too).
+    void mix()
+    {
+        const double rate = 48000;
+        auto input = [](uint64_t i, float& l, float& r) { l = float(0.5 * std::sin(i * 0.05)); r = float(0.3 * std::sin(i * 0.031)); };
+        auto play = [&](double mix, double later = -1) {
+            Effect o(rate);
+            o.input = input;
+            o.at(0).param(param("Leslie speed"), 2).param(param("Mix"), mix);
+            auto x = o.render(4800, 512);
+            if(later >= 0) o.at(0).param(param("Mix"), later);
+            const auto y = o.render(4800, 512);
+            x.left.insert(x.left.end(), y.left.begin(), y.left.end());
+            x.right.insert(x.right.end(), y.right.begin(), y.right.end());
+            return x;
+        };
+        const auto dry = play(0), wet = play(1), half = play(0.5), change = play(1, 0);
+        double most = 0, step = 0;
+        for(size_t i = 480; i < dry.left.size(); ++i)
+        {
+            float l, r;
+            input(i, l, r);
+            CHECK(dry.left[i] == l && dry.right[i] == r);
+            most = std::max({most, std::fabs(half.left[i] - 0.5 * (l + wet.left[i])), std::fabs(half.right[i] - 0.5 * (r + wet.right[i]))});
+            if(i < 4800) CHECK(change.left[i] == wet.left[i]);
+            if(i >= 4800 + 480) CHECK(change.left[i] == l && change.right[i] == r);
+        }
+        const double at = (change.left[4800 + 240] - dry.left[4800 + 240]) / (wet.left[4800 + 240] - dry.left[4800 + 240]);
+        std::printf("  half: within %.2g of the mean of dry and wet; 5 ms into a change from 1 to 0: %.3f wet\n", most, at);
+        CHECK(most < 1e-6 && std::fabs(at - 0.5) < 0.01 && rms(wet.left, 0, wet.left.size()) > 0.05);
     }
 
     void tail()
@@ -493,4 +538,5 @@ const std::map<std::string, void (*)()> leslieTests = {
     {"leslie-metadata", metadata}, {"leslie-realtime", realtime}, {"leslie-state", state}, {"leslie-rates", rates},
     {"leslie-speed", speed}, {"leslie-rebuild", rebuild}, {"leslie-tail", tail}, {"leslie-contexts", contexts},
     {"leslie-memory", memory}, {"leslie-determinism", determinism}, {"leslie-threads", threads}, {"leslie-cabinet", cabinet},
+    {"leslie-mix", mix},
 };

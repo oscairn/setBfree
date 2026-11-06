@@ -23,7 +23,8 @@
 // microphones. Leslie speed is live; the other parameters build a new rotor on the main
 // thread, which takes over the old one's rotor angles and speeds and is crossfaded in over
 // 10 ms. Each effect context (oscairn.effect-contexts) owns one rotor. The mod wheel and the
-// sustain pedal switch the speed, as on the organ.
+// sustain pedal switch the speed, as on the organ. Mix, the effect's own parameter (last),
+// blends the dry input back in.
 
 #include "leslie.h"
 #include "engine.h"
@@ -62,21 +63,25 @@ namespace
         const char* m = p.module;
         return m[0] == 'L' && m[1] == 'e' && m[2] == 's' && m[3] == 'l' && m[4] == 'i' && m[5] == 'e' && !same(p.name, "Leslie");
     }
-    constexpr uint32_t count = [] {
+    constexpr uint32_t organCount = [] {
         uint32_t n = 0;
         for(const auto& p : organ::params) n += isLeslie(p);
         return n;
     }();
-    constexpr std::array<uint32_t, count> organIndex = [] {
-        std::array<uint32_t, count> a{};
+    constexpr std::array<uint32_t, organCount> organIndex = [] {
+        std::array<uint32_t, organCount> a{};
         uint32_t n = 0;
         for(uint32_t i = 0; i < organ::paramCount; ++i) if(isLeslie(organ::params[i])) a[n++] = i;
         return a;
     }();
-    const Param& param(uint32_t i) { return organ::params[organIndex[i]]; }
+    // Dry/wet, after the organ's parameters so that their IDs stay the same.
+    constexpr Param mix{"Mix", "Leslie", 0, 1, 1, false, organ::Kind::Plugin, organ::Map::Unit, nullptr, organ::Text::Percent, "",
+                        nullptr, nullptr, organ::W_KNOB, 0, 0, OSCAIRN_ROLE_MIX};
+    constexpr uint32_t count = organCount + 1, iMix = organCount;
+    const Param& param(uint32_t i) { return i == iMix ? mix : organ::params[organIndex[i]]; }
     constexpr uint32_t iSpeed = [] {
-        for(uint32_t i = 0; i < count; ++i) if(same(organ::params[organIndex[i]].name, "Leslie speed")) return i;
-        return count;
+        for(uint32_t i = 0; i < organCount; ++i) if(same(organ::params[organIndex[i]].name, "Leslie speed")) return i;
+        return organCount;
     }();
     static_assert(iSpeed == 0, "Leslie speed comes first");
 
@@ -145,6 +150,7 @@ namespace
         sbf_rotor* fading = nullptr;
         uint32_t fadeLeft = 0, fadeFrames = 480, tailFrames = 2400, quietFor = 0;
         int speed = -1; // applied to the rotor
+        float wet = 1; // the mix, moving to Mix over fadeFrames
         bool loud = false; // the last samples rendered
         uint8_t wheel = 0, pedal = 0;
         float in[F], l[F], r[F], fl[F], fr[F];
@@ -266,6 +272,7 @@ namespace
             }
             sbf_rotor_process(rotor, in, l, r, n);
             if(fading && fadeLeft) sbf_rotor_process(fading, in, fl, fr, n);
+            const float wetTo = float(values[iMix].load(std::memory_order_relaxed)), step = 1.f / float(fadeFrames);
             float peak = 0;
             for(uint32_t k = 0; k < n; ++k)
             {
@@ -277,6 +284,10 @@ namespace
                     b = b * (1 - g) + fr[k] * g;
                     --fadeLeft;
                 }
+                wet += std::clamp(wetTo - wet, -step, step);
+                const float dryL = inL ? inL[k] : 0.f, dryR = inR ? inR[k] : dryL;
+                a = a * wet + dryL * (1 - wet);
+                b = b * wet + dryR * (1 - wet);
                 outL[k] = a; outR[k] = b;
                 peak = std::max({peak, std::fabs(a), std::fabs(b)});
             }
@@ -349,16 +360,16 @@ namespace
         },
     };
 
-    // Speed first, then the rotors, cabinet and filters as on the organ.
+    // Speed first, then the rotors, cabinet and filters as on the organ, then Mix.
     const oscairn_plugin_ui_t uiExt = {[](const clap_plugin_t*, clap_id id, oscairn_param_hint_t* hint) {
         if(id < 1 || id > count) return false;
         const auto& p = param(id - 1);
-        *hint = {p.widget, id, CLAP_INVALID_ID, 0, 0};
+        *hint = {p.widget, id, CLAP_INVALID_ID, 0, p.role};
         return true;
     }};
 
     // State: a version line, then every value with 17 digits in the C locale.
-    constexpr char stateVersion[] = "setbfree-leslie-1";
+    constexpr char stateVersion[] = "setbfree-leslie-2"; // 2: Mix
     const clap_plugin_state_t stateExt = {
         [](const clap_plugin_t* p, const clap_ostream_t* stream) {
             std::ostringstream out;
@@ -489,6 +500,7 @@ namespace
             s.built = s.wanted.load();
             s.speed = int(std::lround(s.values[iSpeed].load()));
             s.fadeLeft = 0; s.quietFor = 0;
+            s.wet = float(s.values[iMix].load());
             s.fadeFrames = std::max<uint32_t>(1, uint32_t(rate * 0.01));
             s.tailFrames = uint32_t(std::ceil(rate * tailSeconds));
             s.active.store(true, std::memory_order_release);
@@ -501,6 +513,7 @@ namespace
             auto& s = self(p);
             if(s.rotor) sbf_rotor_clear(s.rotor);
             if(s.fading) s.fadeLeft = 0;
+            s.wet = float(s.values[iMix].load());
             s.quietFor = s.tailFrames;
             s.tail.store(false);
         };
