@@ -102,6 +102,7 @@ item gets a test in `oscairn/tests/` unless it says otherwise.
 | 17 | Every sample rate sounds the same | 44.1/48/88.2/96/192 kHz: tonewheel pitch, Leslie rotor speeds, vibrato rate, key click and percussion decay times measured from renders | Rate test with tolerances; listening files at each rate |
 | 18 | Oscairn host tests | `oscairn-plugin-check`, `oscairn-render`, worker variants | Run from a local Oscairn build; results in section 10 |
 | 19 | Pitch bend, mod wheel, expression | Organs do not bend (bend ignored; decision 4); mod wheel switches the Leslie fast/slow; CC 11 is the swell (expression) pedal, per channel | Tests |
+| 20 | Instant Performance changes (`oscairn.sound-snapshots/draft-1`) | The SDK's `prepareSnapshot` from the same `readPatch` (main-thread safe: it fills a patch nobody holds) and `buildPreset`, which builds each sound's engine; a sound whose configuration another sound has copies that engine's tone wheels. Eight contexts (decision 16) | `snapshots`, `shared-wheels`, `threads`; done in session 4 |
 
 ### 4.1 Per-key fades
 
@@ -251,7 +252,22 @@ Decided by Jacob (2026-11-02, and 12–14 and the vendor on 2026-11-05) are mark
 15. **Versions — decided:** the plugin's version goes up whenever its sound or memory figures
     change (Oscairn measures CPU and memory per version). setBfree 0.2.0 (session 2: click,
     release, choke, presets as sounds); setBfree Leslie 0.1.0. Session 3: setBfree 0.3.0 and
-    setBfree Leslie 0.2.0 (the horn at high rates, the cabinet clamp, Mix).
+    setBfree Leslie 0.2.0 (the horn at high rates, the cabinet clamp, Mix). Session 4: setBfree
+    0.4.0 (snapshots prepared beside); the Leslie unchanged at 0.2.0.
+16. **Instant Performance changes — proposed (session 4), for Jacob to confirm:** offer
+    `oscairn.sound-snapshots/draft-1`, so Oscairn prepares the next Performance's organ sounds
+    beside the playing ones instead of loading a new instance. Each prepared sound still owns a
+    whole engine (decision 3); to keep preparing fast, a new engine whose configuration (the
+    configuration parameters, as setBfree configuration text) matches the last engine built for
+    any slot copies that engine's tone wheels (engine change 11) instead of computing them: 2.5 ms
+    instead of 42 ms at 48 kHz. Capacity stays eight. A part's snapshot is its Default and the
+    sounds it prepared, all prepared beside: two for a part playing one prepared sound, as
+    Oscairn saves them. After a switch the instance holds its first Default (never discarded),
+    the outgoing sounds until their tails end, and the incoming ones: for such a part 1 + 2 + 2,
+    leaving room for the sounds of one more switch still ringing. A context costs an engine's
+    memory (2.5 MB at 48 kHz) only while prepared, so raising the capacity is cheap if
+    Performances need more; with too few free, Oscairn loads the snapshot into an instance as
+    before.
 
 ## 10. Progress
 
@@ -529,6 +545,64 @@ turned); the effect's is identical.
 
 **Listening** (`forks/measurements/listen-organ/`, every file rendered again from `7c0e1a8`):
 new section 13, the horn at 44.1–192 kHz as now and as upstream's (`-before`).
+
+### Session 4 (2026-11-05): instant Performance changes
+
+Oscairn read at `eecdee4` (`oscairn/oscairn` main, after `e4a0ef8` and `347b2fc`; the local
+clone could not pull over SSH, `git ls-remote` over HTTPS confirmed main was `eecdee4`). Its SDK
+headers re-vendored unchanged from that commit (`sound-contexts.h`, `sound-contexts-plugin.hpp`
+changed). Decision 16 is proposed in section 9; checklist item 20 added in section 4.
+
+**Engine change 11** (`src/tonegen.c`, `oscairn/engine.c`): `sbf_create_like(rate, config,
+like)` creates an engine whose tone wheels' waves are copied from `like`'s, which must have the
+same rate and configuration. Computing those waves is nearly all of creating an engine; the copy
+is bit-identical because `initEnvelopes` reseeds the random numbers after the waves. Not with
+`SETBFREE_LIBC_RAND` or `SETBFREE_STOCK` (the stock gate's builds), which compute as before. The
+organ keeps, per slot, the last engine it built and that engine's configuration (main thread
+only; an engine stays alive until its slot is rebuilt or discarded) and uses one of the same
+configuration as the donor; only its waves are read, which never change, so it may be playing.
+
+**Commits:** `ef5a3c5` (headers), `8fd3b20` (shared tone wheels), `5700af0` (the extension),
+`987eca8` (setBfree 0.4.0), `37978aa` (the snapshots test rings out a prepared sound, not the
+Default, which can never be discarded and so could not show a refusal).
+
+**Tests** (each new one fails with its change undone):
+`shared-wheels`: a sound with the Default's configuration is built from its tone wheels (the
+counter `enginesShared`), one with other wheels is not, the same again is; the copied build
+renders identically to one built from scratch and takes under half its time (2.5 against 43
+ms). Fails with the plugin's donor dropped (count) and with the engine's copy dropped (time).
+`snapshots`: a snapshot of two sounds (a flute on the Default, square wheels with percussion on
+channel 2) prepared beside a playing instance and selected plays exactly as the snapshot
+loaded, both channels, both outputs; nothing is selected before the cue; a key held on the
+outgoing sound (a prepared one) keeps it, and the output is that sound alone plus the incoming
+one alone, sample for sample; the outgoing sound refuses discard while its key is down and while
+its tail rings, then reports idle (about 3 s after its key) and goes; the Default is never
+discarded; a bad snapshot, and one needing two contexts where one is free, add nothing and say
+why. Fails without the `get_extension` line, and (from `37978aa`) with the tail's pin dropped.
+`threads` also prepares a snapshot while rendering (TSan).
+
+**Switch times** (Release, macOS arm64, on a machine also running other builds, load average
+about 60, so times are noisy): preparing that two-sound snapshot beside took 47-52 ms in five
+runs in a row, up to 124 ms in others (the flute's engine copied from the Default's wheels, the
+square wheels' computed); the block that
+applies the cue's selections took 0.02-0.04 ms. In Oscairn's own Session (a scratch probe built
+on Oscairn `eecdee4`'s libraries following its `control-performance-switch` D -> E case, two
+organ parts with one sound each): D -> E with a key held on D prepared E's sounds beside D's
+in 15.6 ms (0 instances loaded, 2 reused, 2 beside), E -> D 14.0 ms and D -> E again 20.0 ms;
+D's held key kept its sound and played on, D's sound was discarded once rung out, and after
+each switch the output matched a fresh load of that Performance sample for sample. The same
+first switch with the build before the extension (`ef5a3c5`) loaded two new instances: 2268 ms
+(cold open in that run 2513 ms; later switches there took warm instances in 12-17 ms).
+
+**Gates on each committed tree** (worktrees, macOS arm64): release tests (33, 34, 35, 35, 35),
+ASan and UBSan, TSan (the same counts), all passed; the stock gate 6 of 6 identical on each.
+**CI** on `ef5a3c5`, `8fd3b20`, `5700af0` and `987eca8`: all six jobs passed on each (Linux
+x86_64, Linux ARM64, macOS arm64, ASan+UBSan, TSan, upstream's own build), and on `37978aa`.
+
+**Oscairn host tests** (Oscairn `eecdee4` built outside its repo, Release, macOS arm64; plugin
+from `987eca8`): `oscairn-plugin-check … org.oscairn.setbfree synth --param 3=2` PASSED in the
+engine and with `OSCAIRN_PLUGIN_WORKER`; `… org.oscairn.setbfree.leslie effect --param 1=2`
+PASSED in the engine. The organ's reopened render differs by rms 0.00017 (its Leslie had turned).
 
 ## 11. Known differences
 
