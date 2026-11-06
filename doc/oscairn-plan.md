@@ -147,18 +147,20 @@ candidate for a rotary speaker. Built in session 2 as a second CLAP plugin in `s
   fast), both reported as parameter changes.
 - Its parameters are the organ's Leslie parameters, the same names, ranges, modules
   (`Leslie`, `Leslie/Rotors`, `Leslie/Cabinet`, `Leslie/Filters`) and value text, but the
-  organ's on/off switch (the host bypasses an effect): 31 parameters, Leslie speed first. Speed
-  is live; the others build a new rotor on the main thread, which takes over the old one's
-  rotor angles and speeds and is crossfaded in over 10 ms.
+  organ's on/off switch (the host bypasses an effect), then its own Mix (session 3, decision 14):
+  32 parameters, Leslie speed first. Speed and Mix are live (Mix moves over 10 ms; 0 is the
+  input as it came, 1 the cabinet alone, the default; role `OSCAIRN_ROLE_MIX`); the others build
+  a new rotor on the main thread, which takes over the old one's rotor angles and speeds and is
+  crossfaded in over 10 ms.
 - `oscairn.effect-contexts`: up to 16 contexts on one engine (one rate), each with its own rotor,
   parameters and state; contexts outlive the interface they came from. `resources` reports the
   rotors held and `tail_active`. `clap.tail` is 50 ms (measured: the output dies away 16–22 ms
   after the input), and the effect returns `CLAP_PROCESS_SLEEP` once the input has been silent
   that long. `oscairn.memory` declares a rotor (1.1 MB) per context; `oscairn.ui` puts the speed
-  first, as buttons. State is text (`setbfree-leslie-1` and every value, `%.17g`, C locale).
+  first, as buttons. State is text (`setbfree-leslie-2` and every value, `%.17g`, C locale).
 - Real-time safe (allocation guard), any block size renders the same (`whirlRamp`, section 11),
-  rates 8–384 kHz (above 384 kHz the 2,048-sample delay lines are too short for the largest
-  cabinet).
+  rates 8–384 kHz (at high rates a large cabinet shrinks to fit the 2,048-sample delay lines,
+  section 11).
 
 **How the effects suite can use it** (RFC 0016's Rotary Speaker types; `oscairn/sst-effects` is
 not touched here): either (a) as an external plugin, the suite's Rotary Speaker slot naming
@@ -194,14 +196,14 @@ with its change undone, no gate loosened.
 
 ## 9. Decisions for Jacob to confirm
 
-Decided by Jacob (2026-11-02) are marked **decided**.
+Decided by Jacob (2026-11-02, and 12–14 and the vendor on 2026-11-05) are marked **decided**.
 
 1. **Licence — decided:** keep GPL-2.0-or-later for the fork and the plugins; new files under the same.
 2. **Name and ID — decided:** keep setBfree's name. The organ is "setBfree",
    `org.oscairn.setbfree` (in Oscairn's own namespace, not another author's that upstream might
    claim); the effect is "setBfree Leslie", `org.oscairn.setbfree.leslie`; the bundle is
    `setbfree.clap`; the programs' preset provider is `org.oscairn.setbfree.programs`. Vendor
-   "Oscairn" (to confirm). The organ's state keeps its version line `oscairn-organ-1`, so states
+   "Oscairn" (confirmed). The organ's state keeps its version line `oscairn-organ-1`, so states
    saved before the rename load.
 3. **One engine per sound context:** each prepared sound is a whole organ with its own
    Leslie and reverb (its memory is measured in M1). Held keys of the old sound keep their
@@ -230,21 +232,26 @@ Decided by Jacob (2026-11-02) are marked **decided**.
     every rate (the stock gate uses it at 48 and 96 kHz). A choke with other keys held fades over
     that release, 2.9 ms at every rate.
 11. **The Leslie effect — decided: build it** in this fork (section 6).
-12. **The Leslie's horn is brighter at high rates** (section 11, measured: +1.9 dB at 3 kHz at
-    88.2 kHz, +2.6 dB at 192 kHz, against 48 kHz). Its directivity filters and reflection
-    filters work on neighbouring samples. Tried (not committed): reading their history every
-    2nd sample at 88.2/96 kHz and every 4th at 176.4/192 kHz brings it within 0.7 dB; the rest is
-    the Doppler lines' linear interpolation. Fix in `whirl.c` behind a reference rate like
-    `osc.envelope.rate` (bit-identical at 44.1/48 kHz), or accept?
-13. **Leslie geometry at 176.4/192 kHz:** the delay lines are 2,048 samples, so a mic distance
-    plus twice a rotor's radius beyond about 170 cm overruns them at 192 kHz (garbage echoes),
-    in the organ and the effect. Making them longer changes every rate's output in the last bits
-    (the stock gate). Clamp the cabinet at high rates, or narrow the ranges?
-14. **The Leslie effect has no dry/wet control** (a rotary speaker is all wet; the host's mix
-    or a send does the rest). Add one with the `mix` role?
+12. **The Leslie's horn at high rates — decided: fix it** (organ and effect), keeping 44.1 kHz
+    bit-identical. Done in session 3 as engine change 9, `whirl.reference.rate` (default 44100):
+    above it the horn's directivity and reflection filters read their history 44.1 kHz's sample
+    apart (interpolated) and the delay lines keep 44.1 kHz's sample of headroom; 0 is upstream's.
+    The horn now matches 44.1 kHz within 0.35 dB from 1 to 4 kHz at every rate (upstream: up to
+    +1.9 dB at 4 kHz with the horn stopped at 192 kHz). Above 6 kHz it stays brighter (section 11):
+    that is 44.1 kHz's own bilinear warping and the Doppler lines' linear interpolation, which
+    the reference rate cannot reach. Matching those too would mean dulling high rates on
+    purpose: Jacob's call, by ear (listening section 13).
+13. **Leslie geometry at high rates — decided: clamp the cabinet.** Done in session 3 as engine
+    change 10: where a cabinet would overrun the 2,048-sample delay lines, it shrinks (its
+    reflections too) by just enough to fit. That is above about 178 kHz for the largest cabinet
+    (mic 100 cm, rotors 50 cm) and above about 252 kHz for the default one; elsewhere nothing
+    changes. A known difference (section 11).
+14. **Dry/wet on the Leslie effect — decided: add it.** Done in session 3: Mix, the effect's last
+    parameter (ID 32), role `OSCAIRN_ROLE_MIX`, default 1 (all wet, as before).
 15. **Versions — decided:** the plugin's version goes up whenever its sound or memory figures
     change (Oscairn measures CPU and memory per version). setBfree 0.2.0 (session 2: click,
-    release, choke, presets as sounds); setBfree Leslie 0.1.0.
+    release, choke, presets as sounds); setBfree Leslie 0.1.0. Session 3: setBfree 0.3.0 and
+    setBfree Leslie 0.2.0 (the horn at high rates, the cabinet clamp, Mix).
 
 ## 10. Progress
 
@@ -458,6 +465,71 @@ on the dry organ (48 and 192 kHz) and on a sawtooth chord.
    resources built in `prepare` (the organ's engines) must wrap it. A hook (say
    `prepared(Context&)`, or `readPreset` getting the context) would make that direct.
 
+### Session 3 (2026-11-05): the horn at high rates, the cabinet clamp, Mix, the SDK's new hooks
+
+Jacob's decisions 12–14 and the vendor name are in section 9. Oscairn read at `66a16e5`
+(`oscairn/oscairn` main, which includes `0ccde9d`); its SDK headers re-vendored unchanged from
+that commit (`memory.h`, `sound-contexts-plugin.hpp` changed).
+
+**Engine changes** (continuing session 2's list):
+
+9. `whirl.reference.rate` (default 44100): above it the horn's directivity filters (five taps)
+   and reflection filters read their history that rate's sample apart, linearly interpolated
+   (history 128 samples, enough for 31× the reference rate), and the delay lines keep that
+   rate's sample of headroom ahead of the reader. Identical at 44.1 kHz and below; 0 gives
+   upstream's.
+10. The cabinet shrinks to fit the 2,048-sample delay lines where it would overrun them.
+
+**The horn as at 44.1 kHz** (decision 12). The headroom matters as much as the filters: with
+only the filters on 44.1 kHz's spacing, 2 kHz came out 0.9 dB quieter through a stopped horn at
+192 kHz (the leak, which
+is not delayed, meets the horn at another phase). `rates` (the organ: a 2960 Hz tone, 4' on F#6,
+through a stopped horn against the Leslie off) and `leslie-rates` (3 kHz, stopped, left mic) now
+require 0.75 dB of 44.1 kHz at every rate:
+
+| rate | organ, 2960 Hz | effect, 3 kHz | before (organ, effect) |
+| --- | --- | --- | --- |
+| 48 kHz | +0.08 dB | +0.11 dB | — |
+| 88.2 kHz | +0.35 dB | +0.40 dB | — |
+| 96 kHz | +0.36 dB | +0.42 dB | — |
+| 176.4 kHz | +0.41 dB | +0.47 dB | — |
+| 192 kHz | +0.42 dB | +0.48 dB | +1.85, +3.14 dB |
+
+Both fail with the change undone. White noise through the rotor, third-octave bands, is in
+section 11. The stock gate is bit-identical at 44.1 kHz as it is and at 48/96 kHz with
+`osc.envelope.rate=0` and `whirl.reference.rate=0` (6 of 6, on each committed tree).
+
+**The cabinet clamp** (decision 13). `leslie-cabinet`: clicks every 20 ms through the largest
+cabinet (mic 100 cm, rotors 50 cm, no leakage), slow; the energy within 2 ms of a click, before
+the first reflections: 96 kHz 3.1e-6, 192 kHz 1.4e-6 (before the clamp 0.02, the wrapped
+echoes). Fails with the change undone.
+
+**Mix** (decision 14): `leslie-mix` (0 is the input exactly, both channels; 0.5 the mean of dry
+and wet exactly; a change from 1 to 0 is 0.498 wet 5 ms in and dry from 10 ms) and
+`leslie-metadata` (the parameter, its text, role and priority). State `setbfree-leslie-2`.
+
+**The SDK's new hooks** (Oscairn `0ccde9d`, answering session 2's requests): the organ forgets
+its ringing tails' pins in `restored()`, which a refused snapshot never reaches, and no longer
+remembers and restores them around `snapshotLoading`; a sound prepared from a preset gets its
+engine in `buildPreset` instead of a wrapper round `preparePreset`. `state` and `presets` fail
+with either undone.
+
+**Versions** (decision 15): setBfree 0.3.0, setBfree Leslie 0.2.0 (each rotor holds about
+1.5 kB more horn history).
+
+**Gates on each committed tree** (scratch worktree, macOS arm64): release tests, ASan+UBSan and
+TSan (31, 32, then 33 tests as they were added; all passed) and the stock gate (6 of 6 identical).
+
+**Oscairn host tests** (Oscairn `66a16e5` built in `forks/oscairn-build-organ`, Release, macOS
+arm64; plugins from `7c0e1a8`): `kick-clap-scan` lists both. `oscairn-plugin-check …
+org.oscairn.setbfree synth --param 3=2` and `… org.oscairn.setbfree.leslie effect --param 1=2`
+PASSED in the engine and with `OSCAIRN_PLUGIN_WORKER`, and the effect with `--param 32=0.5`
+(Mix) in the engine. The organ's reopened render differs by rms 0.00014 (its Leslie had
+turned); the effect's is identical.
+
+**Listening** (`forks/measurements/listen-organ/`, every file rendered again from `7c0e1a8`):
+new section 13, the horn at 44.1–192 kHz as now and as upstream's (`-before`).
+
 ## 11. Known differences
 
 From upstream setBfree, and what is unfinished.
@@ -483,13 +555,25 @@ From upstream setBfree, and what is unfinished.
 - Each sound has its own Leslie and reverb (decision 3).
 - Presets: programs that set no drawbars (modifiers like "Percussion ON") and random-drawbar
   programs are not listed; per-channel transposes in programs are ignored.
-- **The Leslie's horn is brighter at high rates** (organ and effect): with the Leslie stopped, a
-  3 kHz tone comes out at 0.178, 0.189, 0.235, 0.238, 0.255 at 44.1, 48, 88.2, 96, 192 kHz
-  (-0.5, 0, +1.9, +2.0, +2.6 dB against 48 kHz); 300 Hz is within 0.6 %. Upstream's whirl
-  filters work on neighbouring samples (decision 12).
-- At 176.4/192 kHz a cabinet with mic distance plus twice a rotor's radius beyond about 170 cm
-  overruns the Leslie's 2,048-sample delay lines (decision 13). The effect refuses rates above
-  384 kHz.
+- **The Leslie's horn sounds at every rate as at 44.1 kHz** (`whirl.reference.rate`, default
+  44100; decision 12): above it the horn's directivity and reflection filters read their history
+  44.1 kHz's sample apart and the delay lines keep 44.1 kHz's sample of headroom. Upstream's work
+  on neighbouring samples, so its horn gets brighter as the rate goes up. Identical at 44.1 kHz
+  and below; 0 gives upstream's (the stock gate uses it at 48 and 96 kHz). Measured with white
+  noise through a stopped horn at 192 kHz against 44.1 kHz: 2 kHz +0.22 dB, 3 kHz +0.30, 4 kHz
+  +0.33 (upstream +0.72, +1.31, +1.87); slow or stopped, within 0.35 dB from 1 to 4 kHz at 48,
+  88.2, 96, 176.4 and 192 kHz.
+- **Unfinished: above 6 kHz the horn is still brighter at high rates**: at 192 kHz, slow, 6 kHz
+  +1.2 dB, 8 kHz +2.6, 11 kHz +4.8 (upstream +1.6, +3.4, +6.2); stopped, 11 kHz is +5.9 (upstream
+  +5.4), and at 88.2/96 kHz stopped it is about 2 dB brighter than upstream's there. This is
+  44.1 kHz's own dulling, its bilinear horn filters cramped towards 22 kHz and the Doppler lines'
+  linear interpolation, which the reference rate does not reproduce (decision 12).
+- Where a cabinet would overrun the Leslie's 2,048-sample delay lines it shrinks, reflections
+  included, by just enough to fit (decision 13): above about 178 kHz for the largest cabinet
+  (mic 100 cm, rotors 50 cm), above about 252 kHz for the default one (so at 384 kHz the default
+  cabinet is about two thirds of its size). Upstream writes past the lines' end there, and the
+  writes wrap round as early echoes. The effect refuses rates above 384 kHz; the organ takes up
+  to 768 kHz.
 - The Leslie effect: speed changes made while it sleeps (input silent past its tail) ramp when
   the input comes back; a rebuilt rotor keeps the rotors' angles and speeds but starts with
   empty delay lines (crossfaded over 10 ms).
