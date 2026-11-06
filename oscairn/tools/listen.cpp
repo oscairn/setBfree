@@ -139,6 +139,36 @@ namespace
         return out;
     }
 
+    // The engine alone, all nine upper drawbars out and the Leslie slow, playing the phrase: for
+    // the horn at each rate, as now and as upstream's (whirl.reference.rate=0).
+    Output engineHorn(double rate, const char* config)
+    {
+        sbf_engine* e = sbf_create(rate, config);
+        for(const char* bar : {"upper.drawbar16", "upper.drawbar513", "upper.drawbar8", "upper.drawbar4", "upper.drawbar223",
+                               "upper.drawbar2", "upper.drawbar135", "upper.drawbar113", "upper.drawbar1"})
+            sbf_control(e, sbf_control_id(bar), 0); // MIDI 0: drawbar out to 8
+        sbf_control(e, sbf_control_id("rotary.speed-preset"), 0); // slow
+        const std::vector<std::tuple<double, double, int>> list = {{0.5, 3.5, 48}, {0.5, 3.5, 55}, {0.5, 3.5, 58}, {0.5, 3.5, 64}, {1.0, 0.25, 72},
+            {1.25, 0.25, 74}, {1.5, 0.5, 75}, {2.0, 0.25, 74}, {2.25, 0.25, 72}, {2.5, 1.0, 70}};
+        Output out;
+        float l[SBF_FRAGMENT], r[SBF_FRAGMENT];
+        const uint32_t fragments = uint32_t(5 * rate) / SBF_FRAGMENT;
+        for(uint32_t f = 0; f < fragments; ++f)
+        {
+            const double t0 = double(f) * SBF_FRAGMENT / rate, t1 = t0 + SBF_FRAGMENT / rate;
+            for(const auto& [start, length, key] : list)
+            {
+                if(start >= t0 && start < t1) { const uint8_t m[3] = {0x90, uint8_t(key), 127}; sbf_midi(e, m, 3); }
+                if(start + length >= t0 && start + length < t1) { const uint8_t m[3] = {0x80, uint8_t(key), 0}; sbf_midi(e, m, 3); }
+            }
+            sbf_render(e, l, r);
+            out.left.insert(out.left.end(), l, l + SBF_FRAGMENT);
+            out.right.insert(out.right.end(), r, r + SBF_FRAGMENT);
+        }
+        sbf_destroy(e);
+        return out;
+    }
+
     struct Example
     {
         std::string file;
@@ -216,6 +246,15 @@ int main(int argc, char** argv)
             const std::string name = "11-click-" + std::to_string(int(rate)) + (fragment ? "-one-fragment.wav" : ".wav");
             const std::string config = std::string("osc.attack.click.level=1\nosc.release.click.level=0.75\n") + (fragment ? "osc.envelope.rate=0\n" : "");
             writeWav(dir + "/" + name, engineStaccato(rate, config.c_str()), rate);
+            std::printf("%s\n", name.c_str());
+        }
+
+    // The Leslie's horn at each rate: as now (its filters as at 44.1 kHz) and as upstream's.
+    for(double rate : {44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0})
+        for(bool before : {false, true})
+        {
+            const std::string name = "13-horn-" + std::to_string(int(rate)) + (before ? "-before.wav" : ".wav");
+            writeWav(dir + "/" + name, engineHorn(rate, before ? "whirl.reference.rate=0\n" : nullptr), rate);
             std::printf("%s\n", name.c_str());
         }
 
