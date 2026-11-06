@@ -102,7 +102,7 @@ item gets a test in `oscairn/tests/` unless it says otherwise.
 | 17 | Every sample rate sounds the same | 44.1/48/88.2/96/192 kHz: tonewheel pitch, Leslie rotor speeds, vibrato rate, key click and percussion decay times measured from renders | Rate test with tolerances; listening files at each rate |
 | 18 | Oscairn host tests | `oscairn-plugin-check`, `oscairn-render`, worker variants | Run from a local Oscairn build; results in section 10 |
 | 19 | Pitch bend, mod wheel, expression | Organs do not bend (bend ignored; decision 4); mod wheel switches the Leslie fast/slow; CC 11 is the swell (expression) pedal, per channel | Tests |
-| 20 | Instant Performance changes (`oscairn.sound-snapshots/draft-2`) | The SDK's `prepareSnapshot` from the same `readPatch` (main-thread safe: it fills a patch nobody holds) and `buildPreset`, which builds each sound's engine; a sound whose configuration another sound has copies that engine's tone wheels. `setRingOut`: a sound no channel selects renders into the host's ring-out buffer when given one. Eight contexts (decision 16) | `snapshots`, `shared-wheels`, `threads`; done in session 4 |
+| 20 | Instant Performance changes (`oscairn.sound-snapshots/draft-3`) | The SDK's `prepareSnapshot` from the same `readPatch` (main-thread safe: it fills a patch nobody holds) and `buildPreset`, which builds each sound's engine; a sound whose configuration another sound has copies that engine's tone wheels. `setRingOut`: a sound no channel selects renders into the ring-out channels the SDK names when the host gave a buffer; `chokeRetiring`: a second change chokes the sounds still retiring from the first, which fade into channels 2 and 3 (keys, reverb and Leslie together, since a sound's gain is its keys' amplitude) and report idle at once. Eight contexts (decision 16) | `snapshots`, `shared-wheels`, `threads`; done in sessions 4 and 5 |
 
 ### 4.1 Per-key fades
 
@@ -254,10 +254,12 @@ Decided by Jacob (2026-11-02, and 12–14 and the vendor on 2026-11-05) are mark
     release, choke, presets as sounds); setBfree Leslie 0.1.0. Session 3: setBfree 0.3.0 and
     setBfree Leslie 0.2.0 (the horn at high rates, the cabinet clamp, Mix). Session 4: setBfree
     0.4.0 (snapshots prepared beside, draft 1), then 0.4.1 (draft 2, the ring-out buffer: Oscairn
-    no longer reads draft 1); the Leslie unchanged at 0.2.0.
+    no longer reads draft 1); the Leslie unchanged at 0.2.0. Session 5: setBfree 0.4.2 (draft 3,
+    `choke_retiring`: Oscairn no longer reads draft 2; the choke fade and reset fixes).
 16. **Instant Performance changes — proposed (session 4), for Jacob to confirm:** offer
-    `oscairn.sound-snapshots/draft-2` (with the ring-out buffer, so outgoing sounds ring out
-    through the outgoing Performance's chain), so Oscairn prepares the next Performance's organ sounds
+    `oscairn.sound-snapshots/draft-3` (with the ring-out buffer, so outgoing sounds ring out
+    through the outgoing Performance's chain, and `choke_retiring`, so only one change's tail
+    carries over), so Oscairn prepares the next Performance's organ sounds
     beside the playing ones instead of loading a new instance. Each prepared sound still owns a
     whole engine (decision 3); to keep preparing fast, a new engine whose configuration (the
     configuration parameters, as setBfree configuration text) matches the last engine built for
@@ -626,6 +628,48 @@ The organ's reopened render differs by rms 0.00017 (its Leslie had turned). The 
 15.5 ms, each beside (0 loaded), all its checks passed. Whether Oscairn hands this organ its
 ring-out buffer during that switch is not checked by the probe (the plugin's own test is).
 
+### Session 5 (2026-11-06): review, snapshots draft 3
+
+A code review of the branch against `master`, and Oscairn's move to `oscairn.sound-snapshots/draft-3`
+(`b9e90c7`; draft 2 is no longer read). The SDK headers were re-vendored unchanged from that commit
+(`sound-contexts.h` and `sound-contexts-plugin.hpp` changed).
+
+**Fixed** (each with a test that failed before it):
+
+- `c766535`: a choke's fade depended on the block size. The sound's gain was interpolated from its
+  keys' largest amplitude at a segment's start to that at its end, so the 3 ms fade stretched to the
+  rest of the host's block (10 ms at 480 frames, 85 ms at 4096). While a key of the sound is choking,
+  the gain is now the largest amplitude sample by sample. `choke` renders the same choke in 128- and
+  4096-frame blocks and requires the same output, silent 5 ms on.
+- `987421e`: draft 3. The table gains `chokeRetiring`; the ring-out buffer has four channels and the
+  helper's `retiring(slot)` names the two a sound renders into (2 and 3 while a second change chokes
+  it). The organ needs no fade of its own there: the choke fades its keys, reverb and Leslie together.
+  A sound muted that way, or by a last key at volume 0, ends its tail at once and reports idle.
+  `snapshots` holds a key through two changes with a ring-out buffer at every `process()`: the first
+  change's sound fades into channels 2 and 3 over 3 ms (its own output times the fade, within 1e-6),
+  is silent and idle from there; the second change's outgoing sound is alone on channels 0 and 1, the
+  incoming one alone on the main output. `1cf5e43`: setBfree 0.4.2.
+- `a960413`: `reset` kept the engines' state (free-running wheels and rotors, tails, released keys'
+  pending releases) and the pedals (swell, mod wheel, sustain), so an instance kept warm and reset by
+  the host did not play as a fresh one given its state. Reset now asks the main thread for a new
+  engine per sound, taken over as after a configuration change (the old one plays until then), and
+  puts the pedals back up. `reset` plays a chord with the swell pedal down, resets with the keys held,
+  and requires the next note to render as on a fresh instance.
+
+**Open, for Jacob** (not changed): `silence()` leaks a slot's fading engine when the retire ring has
+no room (32 entries; needs 24 unserviced retirements, so unlikely); `memoryCurrent` reads the
+slots' engine pointers from the main thread while the audio thread may swap them (a formal race, no
+test hits it); a sound muted by a choke or a volume-0 key keeps its reverb and Leslie state, which
+comes back at full gain with the next key of that sound; the stock gate's performance does not press
+a key again within the fragment of its release, the one corner of the envelope restructure it
+leaves to the 44.1 kHz identity of the other paths. The vibrato depths are scaled to 48 kHz by the
+plugin only (`scanner.modulation.rate`), so the gate's engine-level renders stay identical.
+
+**Gates on each committed tree** (worktrees, macOS arm64): release tests (35, 35, 35, 36), ASan and
+UBSan, TSan, the stock gate 6 of 6 identical; all passed. **CI** on `c766535`, `987421e`, `1cf5e43`
+and `a960413`: all six jobs passed on each. The one failed run in the branch's history (`c867b59`)
+was a macOS runner never acquired, not a test. Oscairn's host tests were not run this session.
+
 ## 11. Known differences
 
 From upstream setBfree, and what is unfinished.
@@ -679,3 +723,6 @@ From upstream setBfree, and what is unfinished.
   held is silent up to 2.9 ms + 2.9 ms after it at 44.1 kHz (measured up to 5.3 ms).
 - While a sound is silent it is not rendered, so a Leslie speed change made in silence ramps
   when the next note starts.
+- After a reset the old engines play until the main thread has built new ones (44 ms each at
+  48 kHz), which take over crossfaded if a key was pressed meanwhile; a reset instance then plays
+  as a fresh one given its state.
