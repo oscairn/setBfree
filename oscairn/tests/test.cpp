@@ -693,7 +693,7 @@ namespace
         return e;
     }
 
-    struct RateMeasure { double pitch, vibrato, percussion, leslie; };
+    struct RateMeasure { double pitch, vibrato, percussion, leslie, horn; };
     RateMeasure measure(double rate)
     {
         RateMeasure m{};
@@ -739,6 +739,22 @@ namespace
                 .param(param("Reverb"), 0).param(param("Leslie speed"), 2).note(CLAP_EVENT_NOTE_ON, 0, 93, 1);
             const auto x = o.render(uint32_t(rate * 6), 512).left;
             m.leslie = rotorRate(x, size_t(rate * 3), rate) * 60; // RPM
+        }
+        { // Leslie horn stopped: a 2960 Hz tone (4' on F#6) through it, against the Leslie off
+            double level[2];
+            for(int on : {0, 1})
+            {
+                Instance o(rate);
+                plain(o);
+                o.at(0).param(param("Upper 8'"), 0).param(param("Upper 4'"), 8).param(param("Leslie"), on).param(param("Leslie speed"), 0);
+                o.render(256, 256);
+                o.service();
+                o.render(256, 256);
+                o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 90, 1);
+                const auto x = o.render(uint32_t(rate), 512).left;
+                level[on] = rms(x, size_t(rate / 2), x.size());
+            }
+            m.horn = level[1] / level[0];
         }
         return m;
     }
@@ -896,21 +912,28 @@ namespace
         p->destroy(p);
     }
 
-    // Every sample rate sounds the same: pitch, vibrato, percussion decay, Leslie speed.
+    // Every sample rate sounds the same: pitch, vibrato, percussion decay, Leslie speed, and the
+    // horn's highs as at 44.1 kHz (whirl.reference.rate).
     void rates()
     {
         const auto ref = measure(48000);
-        std::printf("  48000 Hz: A4 %.4f Hz, V3 %.1f cents p-p, fast percussion -20 dB in %.2f s, horn %.1f RPM\n", ref.pitch, ref.vibrato, ref.percussion, ref.leslie);
-        for(double rate : {44100.0, 88200.0, 96000.0, 192000.0})
+        std::printf("  48000 Hz: A4 %.4f Hz, V3 %.1f cents p-p, fast percussion -20 dB in %.2f s, horn %.1f RPM, stopped horn at 2960 Hz %.4f\n",
+                    ref.pitch, ref.vibrato, ref.percussion, ref.leslie, ref.horn);
+        double horn44 = 0;
+        for(double rate : {44100.0, 88200.0, 96000.0, 176400.0, 192000.0})
         {
             const auto m = measure(rate);
             const double cents = 1200 * std::log2(m.pitch / ref.pitch);
-            std::printf("  %.0f Hz: A4 %+.3f cents, V3 %.1f cents p-p, percussion %.2f s, horn %.1f RPM\n", rate, cents, m.vibrato, m.percussion, m.leslie);
+            if(rate == 44100) horn44 = m.horn;
+            std::printf("  %.0f Hz: A4 %+.3f cents, V3 %.1f cents p-p, percussion %.2f s, horn %.1f RPM, stopped horn at 2960 Hz %.4f (%+.2f dB)\n",
+                        rate, cents, m.vibrato, m.percussion, m.leslie, m.horn, 20 * std::log10(m.horn / horn44));
             CHECK(std::fabs(cents) < 0.5);
             CHECK(std::fabs(m.vibrato - ref.vibrato) < 0.1 * ref.vibrato);
             CHECK(std::fabs(m.percussion - ref.percussion) <= 0.02);
             CHECK(std::fabs(m.leslie - ref.leslie) < 0.02 * ref.leslie);
+            CHECK(std::fabs(20 * std::log10(m.horn / horn44)) < 0.75);
         }
+        CHECK(std::fabs(20 * std::log10(ref.horn / horn44)) < 0.75);
     }
 
     // The first note of a new engine is no louder than the same note later.

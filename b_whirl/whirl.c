@@ -120,6 +120,8 @@ initValues (struct b_whirl* w)
 	w->leakLevel = 0.15;
 	w->leakage   = 0;
 
+	w->refRate = 44100;
+
 #ifdef HORN_COMB_FILTER
 	w->cb0fb = -0.55;
 	w->cb0dl = 38;
@@ -533,6 +535,13 @@ zeroBuffers (struct b_whirl* w)
 	memset (w->adx2, 0, sizeof (float) * AGBUF);
 }
 
+/* One sample's headroom ahead of the reader: refRate's sample when it applies (whirl.h). */
+static double
+readerHeadroom (const struct b_whirl* w)
+{
+	return w->refTaps ? w->SampleRateD / w->refRate : 1.0;
+}
+
 void
 computeOffsets (struct b_whirl* w)
 {
@@ -603,8 +612,10 @@ computeOffsets (struct b_whirl* w)
 	w->hornPhase[4] = ((WHIRL_DISPLC_SIZE * 1) / 6);
 	w->hornPhase[5] = ((WHIRL_DISPLC_SIZE * 4) / 6);
 
+	const double ahead = readerHeadroom (w);
+
 	for (i = 0; i < 6; i++) {
-		w->hornSpacing[i] = w->hornSpacing[i] * w->SampleRateD / 22100.0 + hornRadiusSamples + 1.0;
+		w->hornSpacing[i] = w->hornSpacing[i] * w->SampleRateD / 22100.0 + hornRadiusSamples + ahead;
 		assert (maxhn + w->hornSpacing[i] < WHIRL_BUF_SIZE_SAMPLES);
 	}
 
@@ -618,7 +629,7 @@ computeOffsets (struct b_whirl* w)
 	w->drumPhase[5] = ((WHIRL_DISPLC_SIZE * 4) / 6);
 
 	for (i = 0; i < 6; i++) {
-		w->drumSpacing[i] = w->drumSpacing[i] * w->SampleRateD / 22100.0 + drumRadiusSamples + 1.0;
+		w->drumSpacing[i] = w->drumSpacing[i] * w->SampleRateD / 22100.0 + drumRadiusSamples + ahead;
 		assert (maxdr + w->drumSpacing[i] < WHIRL_BUF_SIZE_SAMPLES);
 	}
 }
@@ -645,6 +656,16 @@ initialize (struct b_whirl* w)
 	setIIRFilter (w->drfR, w->lpT, w->lpF, w->lpQ, w->lpG, w->SampleRateD);
 	setIIRFilter (w->hafw, w->haT, w->haF, w->haQ, w->haG, w->SampleRateD);
 	setIIRFilter (w->hbfw, w->hbT, w->hbF, w->hbQ, w->hbG, w->SampleRateD);
+
+	/* the horn's filter taps, j * rate / refRate samples back; adx[adi] is one sample back */
+	w->refTaps = w->refRate > 0 && w->SampleRateD > w->refRate;
+	for (i = 1; i < 5; ++i) {
+		double back = w->refTaps ? i * w->SampleRateD / w->refRate - 1.0 : i - 1.0;
+		if (back > AGBUF - 2)
+			back = AGBUF - 2;
+		w->tapI[i] = (int)floor (back);
+		w->tapF[i] = (float)(back - w->tapI[i]);
+	}
 
 #ifdef HORN_COMB_FILTER
 	w->cb0rp = &(w->comb0[COMB_SIZE - w->cb0dl]);
@@ -1093,6 +1114,8 @@ whirlConfig (struct b_whirl* w, ConfigContext* cfg)
 		w->hnBrakePos = (double)d;
 	} else if (getConfigParameter_dr ("whirl.drum.brakepos", cfg, &d, 0, 1.0) == 1) {
 		w->drBrakePos = (double)d;
+	} else if (getConfigParameter_dr ("whirl.reference.rate", cfg, &d, 0, 768000.0) == 1) {
+		w->refRate = d;
 	}
 #if 1 /* backwards compat typo */
 	else if (getConfigParameter_dr ("whirl.horn.breakpos", cfg, &d, 0, 1.0) == 1) {
@@ -1336,6 +1359,10 @@ whirlProc2 (struct b_whirl* w,
 	const struct _bw* const bfw = w->bfw;
 	const struct _bw* const bbw = w->bbw;
 
+	const int          refTaps = w->refTaps;
+	const int* const   tapI    = w->tapI;
+	const float* const tapF    = w->tapF;
+
 #ifdef DEBUG_SPEED
 	char const* const acdc[3] = { "<", "#", ">" };
 	static int        fgh     = 0;
@@ -1355,6 +1382,12 @@ whirlProc2 (struct b_whirl* w,
         DX[DI] = XS;                     \
 }
 
+/* the history J taps back: neighbouring samples, or J * rate / refRate samples apart */
+#define TAP(DX, DI, J)                                                         \
+        (refTaps ? DX[((DI) + tapI[J]) & AGMASK] * (1.f - tapF[J])             \
+                           + DX[((DI) + tapI[J] + 1) & AGMASK] * tapF[J]       \
+                 : DX[((DI) + (J) - 1) & AGMASK])
+
 #define HN_MOTION(P, BUF, DSP, BW, DX, DI, ANG)                             \
 {                                                                           \
         const float        h1   = (ANG)*WHIRL_DISPLC_SIZE + hornPhase[(P)]; \
@@ -1367,10 +1400,10 @@ whirlProc2 (struct b_whirl* w,
         const float        r    = x_floorf (t);                             \
         float              xa;                                              \
         xa = BW[k].b[0] * x;                                                \
-        xa += BW[k].b[1] * DX[(DI)];                                        \
-        xa += BW[k].b[2] * DX[((DI) + 1) & AGMASK];                         \
-        xa += BW[k].b[3] * DX[((DI) + 2) & AGMASK];                         \
-        xa += BW[k].b[4] * DX[((DI) + 3) & AGMASK];                         \
+        xa += BW[k].b[1] * TAP (DX, DI, 1);                                 \
+        xa += BW[k].b[2] * TAP (DX, DI, 2);                                 \
+        xa += BW[k].b[3] * TAP (DX, DI, 3);                                 \
+        xa += BW[k].b[4] * TAP (DX, DI, 4);                                 \
         const float q = xa * (t - r);                                       \
         n             = ((unsigned int)r) & WHIRL_BUF_MASK_SAMPLES;         \
         BUF[n] += xa - q;                                                   \
@@ -1469,7 +1502,8 @@ whirlProc2 (struct b_whirl* w,
 		HN_MOTION(1, HRbuf, hnBwdDispl, bfw, adx0, w->adi0, hornAngleGRD + bwAng);
 		ADDHIST(adx0, w->adi0, x);
 
-		/* HORN FIRST REFLECTION FILTER */
+		/* HORN FIRST REFLECTION FILTER (its last input is adx0's, refRate's sample back) */
+		if (refTaps) z[0] = TAP(adx0, w->adi0 + 1, 1);
 		FILTER_C(0.4, 0.4, 0);
 
 		/* HORN FIRST REFLECTION */
@@ -1478,6 +1512,7 @@ whirlProc2 (struct b_whirl* w,
 		ADDHIST(adx1, w->adi1, x);
 
 		/* HORN SECOND REFLECTION FILTER */
+		if (refTaps) z[1] = TAP(adx1, w->adi1 + 1, 1);
 		FILTER_C(0.4, 0.4, 1);
 
 		/* HORN SECOND REFLECTION */
@@ -1646,6 +1681,7 @@ static const ConfigDoc doc[] = {
   {"whirl.horn.filter.b.hz",   CFG_DOUBLE,  "300.0",    "Filter frequency", "Hz", 20.0, 8000, 5.0},
   {"whirl.horn.filter.b.q",    CFG_DOUBLE,  "1.0",      "Filter Quality, bandwidth", "", 0.1, 6.0, .1},
   {"whirl.horn.filter.b.gain", CFG_DOUBLE,  "-30.0",    "Filter gain", "dB", -48.0, 48.0, 1.0},
+  {"whirl.reference.rate",     CFG_DOUBLE,  "44100",    "Sample rate the horn's directivity and reflection filters are made for; at higher rates they read their history that rate's samples apart, so the horn sounds the same. 0: neighbouring samples at every rate", "Hz", 0, 192000, 100},
 #if 0 // comb-filter is disabled
   {"whirl.horn.comb.a.feedback", CFG_DOUBLE, "-0.55", "", INCOMPLETE_DOC},
   {"whirl.horn.comb.a.delay", CFG_INT, "38", "", INCOMPLETE_DOC},

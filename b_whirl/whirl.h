@@ -32,7 +32,7 @@
 #define WHIRL_BUF_SIZE_SAMPLES ((unsigned int)(1 << 11))
 #define WHIRL_BUF_MASK_SAMPLES (WHIRL_BUF_SIZE_SAMPLES - 1)
 
-#define AGBUF 8
+#define AGBUF 128 /* the horn's history: 4 taps at up to 31x the reference rate (refRate) */
 #define AGMASK (AGBUF - 1)
 
 typedef float iir_t;
@@ -215,6 +215,15 @@ struct b_whirl {
 	void* midi_cfg_ptr;
 
 	int rampByCaller; ///< if set, whirlProc2 leaves the speeds to whirlRamp calls
+
+	/* whirl.reference.rate: the horn's directivity and reflection filters, which work on
+	 * neighbouring samples, read their history this rate's sample apart (interpolated) at
+	 * higher rates, and the delay lines keep this rate's sample of headroom ahead of the
+	 * reader, so the horn sounds as it does at this rate. 0: one sample at every rate. */
+	double refRate;
+	int    refTaps;  ///< refRate applies (the running rate is above it)
+	int    tapI[5];  ///< history index of the tap j * rate / refRate samples back, from the newest
+	float  tapF[5];  ///< and its fraction towards the next older sample
 };
 
 extern struct b_whirl* allocWhirl ();

@@ -204,7 +204,8 @@ namespace
         CHECK(c.ext<clap_plugin_params_t>(CLAP_EXT_PARAMS)->get_value(c.p, param("Horn fast speed"), &v) && v == 400.125);
     }
 
-    // The horn's speed, the cabinet's level and its response are the same at every rate.
+    // The horn's speed, the cabinet's level and its response are the same at every rate, the
+    // horn's highs as at 44.1 kHz (whirl.reference.rate).
     void rates()
     {
         struct M { double rpm, level, high; };
@@ -226,13 +227,15 @@ namespace
             }
             return m;
         };
-        const auto ref = measure(48000);
-        for(double rate : {44100.0, 48000.0, 88200.0, 96000.0, 192000.0})
+        const auto ref = measure(48000), at44 = measure(44100);
+        for(double rate : {44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0})
         {
             const auto m = measure(rate);
-            std::printf("  %.0f Hz: horn %.1f RPM, stopped: 300 Hz at %.4f, 3 kHz at %.4f\n", rate, m.rpm, m.level, m.high);
+            const double high = 20 * std::log10(m.high / at44.high);
+            std::printf("  %.0f Hz: horn %.1f RPM, stopped: 300 Hz at %.4f, 3 kHz at %.4f (%+.2f dB)\n", rate, m.rpm, m.level, m.high, high);
             CHECK(std::fabs(m.rpm - ref.rpm) < 0.02 * ref.rpm && std::fabs(m.rpm - 423.36) < 0.03 * 423.36);
             CHECK(std::fabs(m.level / ref.level - 1) < 0.05);
+            CHECK(std::fabs(high) < 0.75);
         }
     }
 
