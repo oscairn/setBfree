@@ -281,10 +281,10 @@ namespace
                 for(uint32_t p = 0; p < paramCount; ++p) s.shadow[p] = contexts[i].patch.values[p];
                 s.built = s.wanted.load();
                 if(rate > 0) s.engine = build(contexts[i].patch.values, s);
-                s.level = std::pow(10.0, contexts[i].patch.values[iVolume] / 20.0);
             }
         }
-        // Ends every sound's tail and key at once (activate, reset, snapshot load).
+        // Ends every sound's tail and key at once, and puts the pedals back up (activate, reset,
+        // snapshot load).
         void silence()
         {
             for(uint32_t i = 0; i < contextCapacity; ++i)
@@ -294,7 +294,19 @@ namespace
                 if(s.engine) sbf_panic(s.engine);
                 if(s.fading) { if(retired.space()) retired.push(s.fading); else sbf_panic(s.fading); s.fading = nullptr; }
                 s.cur.pos = s.old.pos = F; s.quiet = 0; s.exprGain = 1.0;
+                s.swell = 127;
+                if(s.engine) sbf_control(s.engine, swellId, s.swell);
+                s.level = std::pow(10.0, contexts[i].patch.values[iVolume] / 20.0);
             }
+            expression.fill(127); wheel.fill(0); sustainPedal.fill(0);
+        }
+        // Audio thread (reset): the main thread builds every sound's engine again and the audio
+        // thread takes it over as after a configuration change, so the instance then plays as a
+        // fresh one given its state would (the organ's wheels and rotors run free, so nothing short
+        // of a new engine sounds the same). Until then the old engine plays.
+        void renew()
+        {
+            for(auto& s : slots) if(s.engine) s.wanted.fetch_add(1, std::memory_order_release);
         }
 
         void wake(uint32_t slot)
@@ -927,7 +939,13 @@ const clap_plugin_t* create(const clap_host_t* host)
     };
     s->plugin.start_processing = [](const clap_plugin_t*) { return true; };
     s->plugin.stop_processing = [](const clap_plugin_t*) {};
-    s->plugin.reset = [](const clap_plugin_t* p) { self(p).resetVoices(); self(p).silence(); };
+    s->plugin.reset = [](const clap_plugin_t* p) {
+        auto& s = self(p);
+        s.resetVoices();
+        s.silence();
+        s.renew();
+        if(s.host) { s.wantCallback = false; s.host->request_callback(s.host); }
+    };
     s->plugin.process = process;
     s->plugin.get_extension = [](const clap_plugin_t*, const char* id) -> const void* {
         if(!std::strcmp(id, OSCAIRN_EXT_SOUND_CONTEXTS)) return &soundContextsExt;

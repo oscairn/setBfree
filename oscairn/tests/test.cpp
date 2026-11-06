@@ -1001,6 +1001,22 @@ namespace
         CHECK(first < 1.3 * later);
     }
 
+    // Reset: the instance then plays as a fresh one given its state does, sample for sample (the
+    // host resets an instance kept warm instead of loading its state again): every sound's
+    // engine is built again, and the pedals are as at the start.
+    void reset()
+    {
+        auto play = [](Instance& o) { o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 64, 20); return o.render(24000, 480); };
+        Instance fresh(48000), used(48000);
+        used.at(0).midi(0xb0, 11, 40); // the swell pedal down
+        for(int16_t k : {48, 55, 60}) used.at(0).note(CLAP_EVENT_NOTE_ON, 0, k, k);
+        used.render(24000, 480);
+        used.p->reset(used.p); // the keys still down
+        used.service();
+        const auto a = play(used), b = play(fresh);
+        CHECK(a.left == b.left && a.right == b.right && rms(b.left, 0, 24000) > 1e-3);
+    }
+
     // oscairn.memory: the estimate before activating covers what activating allocates, within 25 %.
     void memory()
     {
@@ -1357,6 +1373,7 @@ namespace
         {"shared-wheels", sharedWheels},
         {"snapshots", snapshots},
         {"memory", memory},
+        {"reset", reset},
         {"startup", startup},
         {"rates", rates},
         {"click", clickRates},
