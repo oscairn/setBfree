@@ -221,8 +221,6 @@ namespace
         bool wantCallback = false;
         bool active = false; // main thread
         uint64_t finished = 0; // voices ended (voicesFinished, for the tests)
-        std::array<bool, contextCapacity> pinnedBeforeLoad{}; // tails ringing when a snapshot load began
-        bool loaded = false;
         std::atomic<Values*> presetIn{nullptr}, presetDone{nullptr}; // a loaded preset, main → audio → main
 
         Organ()
@@ -615,18 +613,11 @@ namespace
             return true;
         }
         // prepare_preset: the helper reads the preset into a new sound; its engine is built here.
-        static uint32_t preparePreset(const clap_plugin_t* p, const char* name, uint32_t kind, const char* location, const char* key, char* message, uint32_t capacity)
+        bool buildPreset(Context& c, std::string& error)
         {
-            const auto id = Base::preparePreset(p, name, kind, location, key, message, capacity);
-            auto& s = self(p);
-            for(auto& c : s.contexts)
-                if(id != CLAP_INVALID_ID && c.prepared && c.id == id && !s.install(c))
-                {
-                    c.prepared = false; // never selected: nothing holds it
-                    if(message && capacity) std::snprintf(message, capacity, "out of memory");
-                    return CLAP_INVALID_ID;
-                }
-            return id;
+            if(install(c)) return true;
+            error = "out of memory";
+            return false;
         }
         void discarded(Context& c)
         {
@@ -657,20 +648,10 @@ namespace
             return i == paramCount && fields.eof();
         }
         // A snapshot load zeroes every context's pins, the ringing tails' among them: forget those.
-        // A refused state changes nothing, so then they are taken back (restored() is not called).
-        void snapshotLoading(bool begins)
-        {
-            if(begins)
-            {
-                loaded = false;
-                for(uint32_t i = 0; i < contextCapacity; ++i) { pinnedBeforeLoad[i] = slots[i].ringing; slots[i].ringing = false; }
-            }
-            else if(!loaded)
-                for(uint32_t i = 0; i < contextCapacity; ++i) slots[i].ringing = pinnedBeforeLoad[i];
-        }
+        // (A refused state changes nothing and does not come here.)
         void restored()
         {
-            loaded = true;
+            for(auto& slot : slots) slot.ringing = false;
             rebuildAll();
             for(uint32_t i = 0; i < paramCount; ++i) values[i] = contexts[selected[0]].patch.values[i];
         }
