@@ -43,6 +43,7 @@
 #include <thread>
 #include <vector>
 
+#include <time.h>
 #include <unistd.h>
 
 using namespace organtest;
@@ -1229,11 +1230,13 @@ namespace
         const oscairn_sound_parameter_t square[] = {{param("Upper 8'"), 8}, {param("Wheel shape"), 2}};
         Instance o(48000);
         auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        // CPU time of this thread, so other processes on the machine do not change the comparison
+        auto cpuMs = [] { timespec t{}; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; };
         auto timed = [&](const char* name, const oscairn_sound_parameter_t* v, uint32_t n) {
-            const auto t = std::chrono::steady_clock::now();
+            const double t = cpuMs();
             const auto id = c->prepare(o.p, name, v, n, nullptr, nullptr, nullptr, 0);
-            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
-            std::printf("  %s prepared in %.1f ms\n", name, ms);
+            const double ms = cpuMs() - t;
+            std::printf("  %s prepared in %.1f ms of CPU time\n", name, ms);
             CHECK(id != CLAP_INVALID_ID);
             return ms;
         };
