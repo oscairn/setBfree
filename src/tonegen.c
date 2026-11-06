@@ -1538,15 +1538,20 @@ initOscillators (struct b_tonegen* t, int variant, double precision)
 
 		/* Initialize each buffer, multiplying attenuation with taper. */
 
-		writeSamples (osp->wave,
-		              osp->lengthSamples,
-		              harmonicsList,
-		              (size_t)MAX_PARTIALS,
-		              osp->attenuation,
-		              osp->frequency,
-		              t);
+		if (t->waveDonor && t->waveDonor->oscillators[i].lengthSamples == wszs) {
+			memcpy (osp->wave, t->waveDonor->oscillators[i].wave, wszb);
+		} else {
+			writeSamples (osp->wave,
+			              osp->lengthSamples,
+			              harmonicsList,
+			              (size_t)MAX_PARTIALS,
+			              osp->attenuation,
+			              osp->frequency,
+			              t);
+		}
 
 	} /* for each oscillator struct */
+	t->waveDonor = NULL;
 }
 
 /**

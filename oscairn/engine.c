@@ -109,6 +109,12 @@ applyConfig (struct b_instance* inst, const char* config)
 sbf_engine*
 sbf_create (double rate, const char* config)
 {
+	return sbf_create_like (rate, config, NULL);
+}
+
+sbf_engine*
+sbf_create_like (double rate, const char* config, const sbf_engine* like)
+{
 	sbf_engine* e = (sbf_engine*)calloc (1, sizeof (sbf_engine));
 	if (!e)
 		return NULL;
@@ -145,6 +151,13 @@ sbf_create (double rate, const char* config)
 
 	/* initSynth () in b_synth/lv2.c */
 	unsigned int defaultPreset[9] = { 8, 8, 6, 0, 0, 0, 0, 0, 0 };
+#if !defined(SETBFREE_STOCK) && !defined(SETBFREE_LIBC_RAND)
+	/* (with libc's rand() the waves' noise depends on the process, so they are computed) */
+	if (like && like->inst.synth->SampleRateD == rate)
+		inst->synth->waveDonor = like->inst.synth;
+#else
+	(void)like;
+#endif
 	initToneGenerator (inst->synth, inst->midicfg);
 	initVibrato (inst->synth, inst->midicfg);
 	initPreamp (inst->preamp, inst->midicfg);

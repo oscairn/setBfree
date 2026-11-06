@@ -199,6 +199,8 @@ namespace
         std::array<std::atomic<double>, paramCount> shadow{}; // values for the main thread
         std::atomic<uint32_t> wanted{0};
         uint32_t built = 0; // main
+        const sbf_engine* latest = nullptr; // main: the last engine built for the slot, alive until it is rebuilt or discarded
+        std::string latestConfig;           // and its configuration
     };
 
     struct Organ : oscairn::contexts::Engine<Organ, Voice, Patch, contextCapacity, voiceCapacity>
@@ -221,6 +223,7 @@ namespace
         bool wantCallback = false;
         bool active = false; // main thread
         uint64_t finished = 0; // voices ended (voicesFinished, for the tests)
+        uint64_t shared = 0;   // engines built from another's tone wheels (enginesShared, for the tests)
         std::atomic<Values*> presetIn{nullptr}, presetDone{nullptr}; // a loaded preset, main → audio → main
 
         Organ()
@@ -243,11 +246,18 @@ namespace
 
         uint32_t slotOf(const Context& c) const { return uint32_t(&c - contexts.data()); }
 
-        // Main thread: an engine for these values at the current rate.
-        sbf_engine* build(const Values& v) const
+        // Main thread: an engine for these values at the current rate, for a slot. Its tone wheels
+        // are copied from another slot's engine of the same configuration where there is one.
+        sbf_engine* build(const Values& v, Slot& into)
         {
-            auto* e = sbf_create(rate, configFor(v).c_str());
+            auto config = configFor(v);
+            const sbf_engine* like = nullptr;
+            for(const auto& s : slots) if(s.latest && s.latestConfig == config) { like = s.latest; break; }
+            auto* e = sbf_create_like(rate, config.c_str(), like);
             if(!e) return nullptr;
+            shared += like != nullptr;
+            into.latest = e;
+            into.latestConfig = std::move(config);
             for(uint32_t i = 0; i < paramCount; ++i)
                 if(params[i].kind == Kind::Live) sbf_control(e, controlId[i], midiFor(i, v[i]));
             sbf_keyboard_split(e, int(std::lround(v[iPedalSplit])), int(std::lround(v[iLowerSplit])));
@@ -263,14 +273,14 @@ namespace
         void rebuildAll()
         {
             silence();
+            for(auto& s : slots) { freeEngines(s); s.latest = nullptr; }
             for(uint32_t i = 0; i < contextCapacity; ++i)
             {
                 auto& s = slots[i];
-                freeEngines(s);
                 if(!contexts[i].prepared) continue;
                 for(uint32_t p = 0; p < paramCount; ++p) s.shadow[p] = contexts[i].patch.values[p];
                 s.built = s.wanted.load();
-                if(rate > 0) s.engine = build(contexts[i].patch.values);
+                if(rate > 0) s.engine = build(contexts[i].patch.values, s);
                 s.level = std::pow(10.0, contexts[i].patch.values[iVolume] / 20.0);
             }
         }
@@ -560,7 +570,7 @@ namespace
                 s.built = want;
                 Values v;
                 for(uint32_t p = 0; p < paramCount; ++p) v[p] = s.shadow[p].load(std::memory_order_relaxed);
-                if(auto* e = build(v)) sbf_destroy(s.pending.exchange(e, std::memory_order_release));
+                if(auto* e = build(v, s)) sbf_destroy(s.pending.exchange(e, std::memory_order_release));
             }
         }
 
@@ -596,7 +606,7 @@ namespace
             for(uint32_t i = 0; i < paramCount; ++i) slot.shadow[i] = c.patch.values[i];
             slot.level = std::pow(10.0, c.patch.values[iVolume] / 20.0);
             if(rate <= 0) return true;
-            auto* e = build(c.patch.values);
+            auto* e = build(c.patch.values, slot);
             if(!e) return false;
             sbf_destroy(slot.pending.exchange(e, std::memory_order_release));
             return true;
@@ -623,6 +633,7 @@ namespace
         {
             auto& s = slots[slotOf(c)];
             freeEngines(s); // unpinned: its tail has ended and no key is down
+            s.latest = nullptr;
             for(auto& ch : s.keys) ch.fill(0);
         }
 
@@ -865,6 +876,7 @@ const clap_plugin_descriptor_t descriptor = {
 };
 
 uint64_t voicesFinished(const clap_plugin_t* p) { return self(p).finished; }
+uint64_t enginesShared(const clap_plugin_t* p) { return self(p).shared; }
 
 const clap_plugin_t* create(const clap_host_t* host)
 {

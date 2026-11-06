@@ -25,4 +25,5 @@ namespace organ
     const clap_plugin_t* create(const clap_host_t* host);
     const void* factory(const char* id); // the preset discovery factory (entry.cpp has the plugin factory)
     uint64_t voicesFinished(const clap_plugin_t* p); // the sound-context helper's voiceFinished calls so far
+    uint64_t enginesShared(const clap_plugin_t* p);  // engines built from another engine's tone wheels so far
 }

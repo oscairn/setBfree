@@ -1059,6 +1059,42 @@ namespace
         std::printf("  %zu sounds prepared from presets, each as its program\n", found.presets.size());
     }
 
+    // A sound whose configuration another sound already has gets its engine's tone wheels
+    // copied from that one's, and sounds as one built from scratch.
+    void sharedWheels()
+    {
+        const oscairn_sound_parameter_t flute[] = {{param("Upper 16'"), 0}, {param("Upper 8'"), 8}, {param("Upper 4'"), 8}};
+        const oscairn_sound_parameter_t square[] = {{param("Upper 8'"), 8}, {param("Wheel shape"), 2}};
+        Instance o(48000);
+        auto* c = o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+        auto timed = [&](const char* name, const oscairn_sound_parameter_t* v, uint32_t n) {
+            const auto t = std::chrono::steady_clock::now();
+            const auto id = c->prepare(o.p, name, v, n, nullptr, nullptr, nullptr, 0);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+            std::printf("  %s prepared in %.1f ms\n", name, ms);
+            CHECK(id != CLAP_INVALID_ID);
+            return ms;
+        };
+        const auto before = organ::enginesShared(o.p);
+        timed("flute (the Default's configuration)", flute, 3);
+        const auto a = c->prepare(o.p, "flute", flute, 3, nullptr, nullptr, nullptr, 0);
+        CHECK(organ::enginesShared(o.p) == before + 2);
+        const auto own = timed("square wheels (a configuration of its own)", square, 2);
+        CHECK(organ::enginesShared(o.p) == before + 2);
+        const auto copied = timed("square wheels again", square, 2);
+        CHECK(organ::enginesShared(o.p) == before + 3);
+        CHECK(copied < own / 2); // the waves are most of the work: about 2.5 against 42 ms (48 kHz, M-series)
+        // The flute from copied wheels against the flute on the Default's own engine.
+        Instance ref(48000);
+        for(const auto& v : flute) ref.at(0).param(v.id, v.value);
+        ref.render(512, 512);
+        CHECK(c->select(o.p, a, -1));
+        o.render(512, 512);
+        for(auto* i : {&o, &ref}) i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 60, 1).note(CLAP_EVENT_NOTE_ON, 0, 67, 2);
+        const auto x = o.render(24000, 480).left, y = ref.render(24000, 480).left;
+        CHECK(x == y && rms(x, 12000, 24000) > 1e-3);
+    }
+
     // Overdrive at its defaults is about as loud as clean, as in setBfree (its preamp's own
     // starting gains, not the documented 0.3567 and 0.07873).
     void overdrive()
@@ -1079,6 +1115,7 @@ namespace
     const std::map<std::string, std::function<void()>> tests = {
         {"overdrive", overdrive},
         {"presets", presets},
+        {"shared-wheels", sharedWheels},
         {"memory", memory},
         {"startup", startup},
         {"rates", rates},

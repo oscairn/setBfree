@@ -559,6 +559,10 @@ struct b_tonegen {
 
 	uint32_t randState; /**< random numbers for wave noise and key click */
 
+	/** A tone generator initialised with the same configuration and sample rate, or NULL:
+	 * initToneGenerator copies its waves instead of computing them, then sets this to NULL. */
+	const struct b_tonegen* waveDonor;
+
 	void* midi_cfg_ptr;
 };
 

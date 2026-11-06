@@ -41,6 +41,10 @@ typedef struct sbf_engine sbf_engine;
  * engine initialises, or NULL. Numbers are read in the C locale whatever the
  * process's locale. Returns NULL when out of memory. */
 sbf_engine* sbf_create (double rate, const char* config);
+/* As sbf_create, but like, created with the same rate and config (or NULL), gives its
+ * tone wheels' waves, which are copied instead of computed: most of the time creating takes.
+ * Only like's waves are read, which never change, so it may be rendering meanwhile. */
+sbf_engine* sbf_create_like (double rate, const char* config, const sbf_engine* like);
 void        sbf_destroy (sbf_engine* e);
 
 /* A MIDI message as setBfree's front ends pass it (notes, CCs, program changes). */
