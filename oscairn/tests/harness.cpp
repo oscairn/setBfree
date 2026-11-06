@@ -17,6 +17,7 @@
  */
 
 #include "harness.h"
+#include <oscairn-clap/sound-contexts.h>
 
 #include <algorithm>
 #include <atomic>
@@ -197,9 +198,19 @@ namespace organtest
         proc.audio_outputs = &buffer; proc.audio_outputs_count = 1;
         if(input) { proc.audio_inputs = &inBuffer; proc.audio_inputs_count = 1; }
         proc.in_events = &in; proc.out_events = &outEvents;
+        std::vector<float> rl(ringOut ? frames : 0), rr(ringOut ? frames : 0);
+        float* ring[2] = {rl.data(), rr.data()};
+        clap_audio_buffer_t ringBuffer{};
+        ringBuffer.data32 = ring; ringBuffer.channel_count = 2;
+        if(ringOut) ext<oscairn_plugin_sound_snapshots_t>(OSCAIRN_EXT_SOUND_SNAPSHOTS)->ring_out(p, &ringBuffer);
         guarded = true;
         const auto status = p->process(p, &proc);
         guarded = false;
+        if(ringOut)
+        {
+            ringOut->left.insert(ringOut->left.end(), rl.begin(), rl.end());
+            ringOut->right.insert(ringOut->right.end(), rr.begin(), rr.end());
+        }
         if(out)
         {
             out->left.insert(out->left.end(), l.begin(), l.end());

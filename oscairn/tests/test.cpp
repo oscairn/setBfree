@@ -1177,6 +1177,37 @@ namespace
         CHECK(info.idle && m->discard(mixed.p, outgoing));
         CHECK(!m->discard(mixed.p, 0)); // the Default is never discarded
 
+        // With a ring-out buffer (draft 2) the retiring sound's key and tail go there, not to the
+        // main output: the main output is the incoming sound alone, the buffer the outgoing alone.
+        {
+            Instance mixed(48000), old(48000), fresh(48000);
+            Output ring;
+            mixed.ringOut = &ring;
+            CHECK(fresh.load(S));
+            uint32_t outgoing = 0;
+            for(auto* i : {&mixed, &old})
+            {
+                auto* ic = i->ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS);
+                outgoing = ic->prepare(i->p, "bright", bright, 2, nullptr, nullptr, nullptr, 0);
+                CHECK(outgoing != CLAP_INVALID_ID && ic->select(i->p, outgoing, -1));
+                i->at(0).note(CLAP_EVENT_NOTE_ON, 0, 48, 9);
+            }
+            const auto before = mixed.render(4800, 480);
+            CHECK(before.left == old.render(4800, 480).left && rms(before.left, 0, 4800) > 1e-3);
+            CHECK(rms(ring.left, 0, ring.left.size()) == 0); // selected: not retiring
+            fresh.render(4800, 480);
+            CHECK(prepareSnapshot(mixed, S, selected));
+            cue(mixed, selected);
+            ring = {};
+            mixed.at(0).note(CLAP_EVENT_NOTE_ON, 0, 72, 10);
+            fresh.at(0).note(CLAP_EVENT_NOTE_ON, 0, 72, 10);
+            for(auto* i : {&mixed, &old}) i->at(2400).note(CLAP_EVENT_NOTE_OFF, 0, 48, 9);
+            const auto main = mixed.render(48000, 480), alone = fresh.render(48000, 480), out = old.render(48000, 480);
+            CHECK(main.left == alone.left && main.right == alone.right && rms(alone.left, 0, 48000) > 1e-3);
+            CHECK(ring.left == out.left && ring.right == out.right && rms(out.left, 24000, 48000) > 1e-5); // the tail, after the key
+            std::printf("  ring-out: the outgoing tail at %.2g rms in the buffer, none in the main output\n", rms(ring.left, 24000, 48000));
+        }
+
         // All or nothing: a bad snapshot, or too few free contexts, adds nothing and says why.
         char message[128] = "";
         Instance full(48000);

@@ -75,6 +75,8 @@ namespace organtest
         uint32_t maxBlock = 4096;
         // An effect's stereo input at each frame since the instance started; none if empty.
         std::function<void(uint64_t frame, float& left, float& right)> input;
+        // Given, each process() gets a ring-out buffer (oscairn.sound-snapshots draft 2), appended here.
+        Output* ringOut = nullptr;
 
         explicit Instance(double rate, bool activate = true, const clap_plugin_t* (*make)(const clap_host_t*) = organ::create);
         ~Instance();

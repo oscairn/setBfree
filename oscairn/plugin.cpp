@@ -478,13 +478,16 @@ namespace
             }
         }
 
-        // Renders [from, to): each sounding engine, its crossfade, its level.
+        // Renders [from, to): each sounding engine, its crossfade, its level. A retiring sound goes to
+        // the host's ring-out buffer when it gave one (oscairn.sound-snapshots draft 2).
         void render(const clap_process_t* process, uint32_t from, uint32_t to)
         {
-            float* outL = process->audio_outputs[0].data32[0];
-            float* outR = process->audio_outputs[0].data32[1];
-            std::fill(outL + from, outL + to, 0.f);
-            std::fill(outR + from, outR + to, 0.f);
+            float* mainL = process->audio_outputs[0].data32[0];
+            float* mainR = process->audio_outputs[0].data32[1];
+            float* outL = mainL;
+            float* outR = mainR;
+            std::fill(mainL + from, mainL + to, 0.f);
+            std::fill(mainR + from, mainR + to, 0.f);
             const uint32_t n = to - from;
             // A choked key lets go at once: where other keys hold its sound up, its release is the fade.
             for(auto& v : voices) if(v.active && v.chokeLength && !v.released) release(v);
@@ -493,6 +496,9 @@ namespace
                 auto& s = slots[i];
                 if(!s.ringing) continue;
                 if(!s.engine) { endTail(i); continue; }
+                const bool retiring = this->retiring(i);
+                outL = retiring ? ringOut[0] : mainL;
+                outR = retiring ? ringOut[1] : mainR;
                 // A key's volume expression or choke lowers the sound only where no other key of it is louder.
                 double g0 = -1, g1 = -1;
                 for(const auto& v : voices)
@@ -815,7 +821,7 @@ namespace
     const clap_plugin_state_t stateExt = {Organ::saveSnapshot, Organ::loadSnapshot};
     const oscairn_plugin_sound_contexts_t soundContextsExt = {Organ::capacity, Organ::get, Organ::prepare, Organ::select, Organ::discard, &stateExt, Organ::preparePreset};
     // A snapshot's sounds prepared beside the playing ones (readPatch and buildPreset run on the main thread while rendering).
-    const oscairn_plugin_sound_snapshots_t soundSnapshotsExt = {Organ::prepareSnapshot};
+    const oscairn_plugin_sound_snapshots_t soundSnapshotsExt = {Organ::prepareSnapshot, Organ::setRingOut};
 
     // oscairn.memory: one engine per prepared sound; the first sound is the context, the rest
     // of the state's sounds are counted as shared.
