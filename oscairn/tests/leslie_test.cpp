@@ -313,6 +313,32 @@ namespace
 
     // The tail: after the input stops the output dies away within the reported tail, and then
     // the effect sleeps; reset empties it at once.
+    // At 192 kHz the largest cabinet no longer overruns the 2048-sample delay lines: nothing
+    // wraps round to arrive within 2 ms of a click, before the cabinet's first reflections.
+    void cabinet()
+    {
+        for(double rate : {96000.0, 192000.0})
+        {
+            Effect o(rate);
+            const auto period = uint64_t(rate * 0.02);
+            o.input = [=](uint64_t i, float& l, float& r) { l = r = i % period ? 0.f : 1.f; };
+            o.at(0).param(param("Mic distance"), 100).param(param("Horn radius"), 50).param(param("Drum radius"), 50)
+                .param(param("Horn leakage"), 0).param(param("Leslie speed"), 1);
+            o.render(512, 512);
+            o.service();
+            const auto x = o.render(uint32_t(rate * 2), 512);
+            double early = 0, all = 0;
+            for(size_t i = size_t(rate * 0.1); i < x.left.size(); ++i)
+            {
+                const double e = double(x.left[i]) * x.left[i] + double(x.right[i]) * x.right[i];
+                all += e;
+                if((512 + i) % period < uint64_t(rate * 0.002)) early += e;
+            }
+            std::printf("  %.0f Hz, largest cabinet: %.2g of the energy within 2 ms of a click\n", rate, early / all);
+            CHECK(all > 0 && early < 1e-4 * all);
+        }
+    }
+
     void tail()
     {
         for(double rate : {44100.0, 192000.0})
@@ -466,5 +492,5 @@ extern const std::map<std::string, void (*)()> leslieTests;
 const std::map<std::string, void (*)()> leslieTests = {
     {"leslie-metadata", metadata}, {"leslie-realtime", realtime}, {"leslie-state", state}, {"leslie-rates", rates},
     {"leslie-speed", speed}, {"leslie-rebuild", rebuild}, {"leslie-tail", tail}, {"leslie-contexts", contexts},
-    {"leslie-memory", memory}, {"leslie-determinism", determinism}, {"leslie-threads", threads},
+    {"leslie-memory", memory}, {"leslie-determinism", determinism}, {"leslie-threads", threads}, {"leslie-cabinet", cabinet},
 };

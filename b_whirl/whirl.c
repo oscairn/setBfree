@@ -542,12 +542,13 @@ readerHeadroom (const struct b_whirl* w)
 	return w->refTaps ? w->SampleRateD / w->refRate : 1.0;
 }
 
-void
-computeOffsets (struct b_whirl* w)
+/* The displacement tables and spacings for the cabinet scaled by scale (1: as configured).
+ * Returns how far ahead of the reader the farthest write lands, in samples. */
+static double
+placeCabinet (struct b_whirl* w, const double scale)
 {
 	unsigned int i;
-
-	zeroBuffers (w);
+	double       need = 0;
 
 	/* clang-format off */
 	/* Spacing between reflections in samples, normalized for 22.1k.
@@ -569,11 +570,11 @@ computeOffsets (struct b_whirl* w)
 	w->drumSpacing[5] = 116.0; /* 178.5cm   190Hz */
 	/* clang-format on */
 
-	const double hornRadiusSamples = (w->hornRadiusCm * w->SampleRateD / 100.0) / w->airSpeed;
-	const double drumRadiusSamples = (w->drumRadiusCm * w->SampleRateD / 100.0) / w->airSpeed;
-	const double micDistSamples    = (w->micDistCm * w->SampleRateD / 100.0) / w->airSpeed;
-	const double micXOffsetSamples = (w->hornXOffsetCm * w->SampleRateD / 100.0) / w->airSpeed;
-	const double micZOffsetSamples = (w->hornZOffsetCm * w->SampleRateD / 100.0) / w->airSpeed;
+	const double hornRadiusSamples = (w->hornRadiusCm * w->SampleRateD / 100.0) / w->airSpeed * scale;
+	const double drumRadiusSamples = (w->drumRadiusCm * w->SampleRateD / 100.0) / w->airSpeed * scale;
+	const double micDistSamples    = (w->micDistCm * w->SampleRateD / 100.0) / w->airSpeed * scale;
+	const double micXOffsetSamples = (w->hornXOffsetCm * w->SampleRateD / 100.0) / w->airSpeed * scale;
+	const double micZOffsetSamples = (w->hornZOffsetCm * w->SampleRateD / 100.0) / w->airSpeed * scale;
 
 	double maxhn = 0;
 	double maxdr = 0;
@@ -615,8 +616,9 @@ computeOffsets (struct b_whirl* w)
 	const double ahead = readerHeadroom (w);
 
 	for (i = 0; i < 6; i++) {
-		w->hornSpacing[i] = w->hornSpacing[i] * w->SampleRateD / 22100.0 + hornRadiusSamples + ahead;
-		assert (maxhn + w->hornSpacing[i] < WHIRL_BUF_SIZE_SAMPLES);
+		w->hornSpacing[i] = w->hornSpacing[i] * w->SampleRateD / 22100.0 * scale + hornRadiusSamples + ahead;
+		if (need < maxhn + w->hornSpacing[i])
+			need = maxhn + w->hornSpacing[i];
 	}
 
 	w->drumPhase[0] = 0;
@@ -629,8 +631,27 @@ computeOffsets (struct b_whirl* w)
 	w->drumPhase[5] = ((WHIRL_DISPLC_SIZE * 4) / 6);
 
 	for (i = 0; i < 6; i++) {
-		w->drumSpacing[i] = w->drumSpacing[i] * w->SampleRateD / 22100.0 + drumRadiusSamples + ahead;
-		assert (maxdr + w->drumSpacing[i] < WHIRL_BUF_SIZE_SAMPLES);
+		w->drumSpacing[i] = w->drumSpacing[i] * w->SampleRateD / 22100.0 * scale + drumRadiusSamples + ahead;
+		if (need < maxdr + w->drumSpacing[i])
+			need = maxdr + w->drumSpacing[i];
+	}
+	return need;
+}
+
+void
+computeOffsets (struct b_whirl* w)
+{
+	zeroBuffers (w);
+
+	/* At high rates a large cabinet would overrun the delay lines: shrink it to fit,
+	 * reflections included (everything but the reader's headroom scales with it). */
+	const double ahead = readerHeadroom (w);
+	const double limit = WHIRL_BUF_SIZE_SAMPLES - 2;
+	const double need  = placeCabinet (w, 1.0);
+	if (need > limit) {
+		const double fit = placeCabinet (w, (limit - ahead) / (need - ahead));
+		assert (fit < WHIRL_BUF_SIZE_SAMPLES - 1);
+		(void)fit;
 	}
 }
 

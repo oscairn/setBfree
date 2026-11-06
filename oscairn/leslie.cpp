@@ -469,7 +469,8 @@ namespace
         s->plugin.destroy = [](const clap_plugin_t* p) { delete &self(p); };
         s->plugin.activate = [](const clap_plugin_t* p, double rate, uint32_t, uint32_t) {
             auto& s = self(p);
-            // Above 384 kHz the delay lines (2048 samples) are too short for the largest cabinet.
+            // At high rates the cabinet shrinks to fit its 2048-sample delay lines (whirl.c); at
+            // 384 kHz the default cabinet is about two thirds of its size.
             if(!(rate >= 8000 && rate <= 384000)) return false;
             if(!s.engine || s.engine->rate != rate)
             {
