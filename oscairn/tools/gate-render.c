@@ -94,6 +94,24 @@ perform (sbf_engine* e, int f, int fragmentsPerSecond)
 		midi3 (e, 0x81, 48, 0);
 		midi3 (e, 0x82, 36, 0);
 	}
+	/* A key pressed again within its own release: let go and pressed before one
+	 * fragment, then let go before one fragment and pressed before the next. */
+	if (f == 4 * s + s / 2) {
+		midi3 (e, 0x90, 62, 100);
+	}
+	if (f == 5 * s) {
+		midi3 (e, 0x80, 62, 0);
+		midi3 (e, 0x90, 62, 100);
+	}
+	if (f == 5 * s + s / 4) {
+		midi3 (e, 0x80, 62, 0);
+	}
+	if (f == 5 * s + s / 4 + 1) {
+		midi3 (e, 0x90, 62, 100);
+	}
+	if (f == 5 * s + s / 2) {
+		midi3 (e, 0x80, 62, 0);
+	}
 }
 
 int
