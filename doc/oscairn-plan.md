@@ -152,7 +152,11 @@ candidate for a rotary speaker. Built in session 2 as a second CLAP plugin in `s
   32 parameters, Leslie speed first. Speed and Mix are live (Mix moves over 10 ms; 0 is the
   input as it came, 1 the cabinet alone, the default; role `OSCAIRN_ROLE_MIX`); the others build
   a new rotor on the main thread, which takes over the old one's rotor angles and speeds and is
-  crossfaded in over 10 ms.
+  crossfaded in over 10 ms. A state load builds it at once. Until the first block after activation
+  or a reset nothing has been heard, so a new rotor takes over whole and Mix starts where it is set.
+  Reset puts the rotor back as built, in place (`sbf_rotor_reset`, from a copy of its rotors'
+  state, 2.3 kB), sets the speed again and puts the mod wheel and pedal up: after a reset and a
+  load (or none) the effect plays as a fresh one given that state, sample for sample.
 - `oscairn.effect-contexts`: up to 16 contexts on one engine (one rate), each with its own rotor,
   parameters and state; contexts outlive the interface they came from. `resources` reports the
   rotors held and `tail_active`. `clap.tail` is 50 ms (measured: the output dies away 16–22 ms

@@ -426,6 +426,7 @@ struct sbf_rotor {
 	double          rate;
 	uint32_t        phase; /* samples into the current fragment */
 	float           drumL[SBF_FRAGMENT], drumR[SBF_FRAGMENT];
+	struct whirl_fresh fresh; /* what sbf_rotor_reset puts back */
 };
 
 void
@@ -481,6 +482,7 @@ sbf_rotor_create (double rate, const char* config)
 	}
 	initWhirl (r->whirl, r->midicfg, rate);
 	r->whirl->rampByCaller = 1;
+	keepWhirl (&r->fresh, r->whirl);
 	if (c) {
 		uselocale (old);
 		freelocale (c);
@@ -506,9 +508,10 @@ sbf_rotor_follow (sbf_rotor* r, const sbf_rotor* from)
 }
 
 void
-sbf_rotor_clear (sbf_rotor* r)
+sbf_rotor_reset (sbf_rotor* r)
 {
-	clearWhirl (r->whirl);
+	restoreWhirl (r->whirl, &r->fresh);
+	r->phase = 0;
 }
 
 /* The speeds move once per fragment, as in the organ, whatever lengths the caller renders. */

@@ -152,6 +152,7 @@ namespace
         int speed = -1; // applied to the rotor
         float wet = 1; // the mix, moving to Mix over fadeFrames
         bool loud = false; // the last samples rendered
+        bool fresh = false; // nothing rendered since activate or reset: a rotor built now takes over whole
         uint8_t wheel = 0, pedal = 0;
         float in[F], l[F], r[F], fl[F], fr[F];
 
@@ -243,7 +244,8 @@ namespace
             }
         }
 
-        // Audio thread: a rotor the main thread built takes over, crossfaded.
+        // Audio thread: a rotor the main thread built takes over, crossfaded from the old one's angles
+        // and speeds; just after a reset, at once and as built, as on a fresh instance.
         void adopt()
         {
             if(fading && !fadeLeft && !retired.load(std::memory_order_acquire))
@@ -252,11 +254,11 @@ namespace
                 fading = nullptr;
                 askForService();
             }
-            if(fading || retired.load(std::memory_order_acquire) || !pending.load(std::memory_order_relaxed)) return;
+            if(fading || (!fresh && retired.load(std::memory_order_acquire)) || !pending.load(std::memory_order_relaxed)) return;
             auto* next = pending.exchange(nullptr, std::memory_order_acq_rel);
             if(!next) return;
-            sbf_rotor_follow(next, rotor);
-            fading = rotor; fadeLeft = fadeFrames;
+            if(!fresh) { sbf_rotor_follow(next, rotor); fadeLeft = fadeFrames; }
+            fading = rotor;
             rotor = next;
             speed = -1;
         }
@@ -303,6 +305,7 @@ namespace
         auto& s = self(p);
         if(!s.rotor || proc->audio_outputs_count < 1 || proc->audio_outputs[0].channel_count < 2) return CLAP_PROCESS_ERROR;
         s.adopt();
+        if(s.fresh) s.wet = float(s.values[iMix].load(std::memory_order_relaxed)); // Mix moves only once heard
         const bool hasIn = proc->audio_inputs_count > 0 && proc->audio_inputs[0].channel_count > 0;
         const float* inL = hasIn ? proc->audio_inputs[0].data32[0] : nullptr;
         const float* inR = hasIn && proc->audio_inputs[0].channel_count > 1 ? proc->audio_inputs[0].data32[1] : nullptr;
@@ -325,6 +328,7 @@ namespace
             i = to;
         }
         for(; e < events; ++e) s.apply(proc->in_events->get(proc->in_events, e), proc->out_events);
+        s.fresh = false;
         const bool ringing = s.quietFor < s.tailFrames || s.loud || s.fading || s.pending.load(std::memory_order_relaxed);
         s.tail.store(ringing, std::memory_order_relaxed);
         return ringing ? CLAP_PROCESS_CONTINUE : CLAP_PROCESS_SLEEP;
@@ -410,6 +414,7 @@ namespace
             if(!in.eof()) return false;
             auto& s = self(p);
             for(uint32_t i = 0; i < count; ++i) s.set(i, v[i]);
+            s.service(); // a rotor for the state now, ready for the next block
             return true;
         },
     };
@@ -500,6 +505,7 @@ namespace
             s.built = s.wanted.load();
             s.speed = int(std::lround(s.values[iSpeed].load()));
             s.fadeLeft = 0; s.quietFor = 0;
+            s.fresh = true;
             s.wet = float(s.values[iMix].load());
             s.fadeFrames = std::max<uint32_t>(1, uint32_t(rate * 0.01));
             s.tailFrames = uint32_t(std::ceil(rate * tailSeconds));
@@ -509,11 +515,16 @@ namespace
         s->plugin.deactivate = [](const clap_plugin_t* p) { self(p).active.store(false, std::memory_order_release); };
         s->plugin.start_processing = [](const clap_plugin_t*) { return true; };
         s->plugin.stop_processing = [](const clap_plugin_t*) {};
+        // As a fresh instance given its state: the rotor as built (a rotor built for a configuration
+        // changed meanwhile takes over whole), the speed set again, Mix where it is set, the pedals
+        // up; asleep, since nothing rings.
         s->plugin.reset = [](const clap_plugin_t* p) {
             auto& s = self(p);
-            if(s.rotor) sbf_rotor_clear(s.rotor);
-            if(s.fading) s.fadeLeft = 0;
-            s.wet = float(s.values[iMix].load());
+            if(s.rotor) sbf_rotor_reset(s.rotor);
+            s.fadeLeft = 0;
+            s.fresh = true;
+            s.speed = -1;
+            s.wheel = s.pedal = 0;
             s.quietFor = s.tailFrames;
             s.tail.store(false);
         };

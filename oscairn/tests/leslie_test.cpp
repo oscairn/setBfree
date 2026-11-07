@@ -310,6 +310,12 @@ namespace
         std::printf("  largest step across the crossfade %.4f (playing: %.4f); horn %.1f RPM after\n", step, held, rpm);
         CHECK(step < 1.5 * held);
         CHECK(std::fabs(rpm - 350) < 10);
+        // Crossfaded, not cut over: the first sample after the new rotor takes over is still the old one's.
+        Effect same(48000);
+        same.input = sine(1760, 48000);
+        same.at(0).param(param("Leslie speed"), 2);
+        same.render(48000 * 3 + 480, 480);
+        CHECK(same.render(480, 480).left[0] == x[0]);
         // The new rotor takes over the old one's angle and speed.
         sbf_rotor* a = sbf_rotor_create(48000, nullptr);
         sbf_rotor* b = sbf_rotor_create(48000, "whirl.horn.fastrpm=350\n");
@@ -412,6 +418,56 @@ namespace
         o.p->reset(o.p);
         const auto x = o.render(480, 480).left;
         CHECK(rms(x, 0, x.size()) < 1e-9); // whirl.c adds a denormal guard to its input
+    }
+
+    // Reset (Oscairn resets a used effect before giving it a state, or before playing it again): at
+    // once it plays as a fresh effect given that state, sample for sample: the rotors' angles and speeds,
+    // a rotor for a changed configuration (taken over whole, not crossfaded), Mix, the mod wheel and the
+    // pedal. Cases: the same state loaded again, another state, no load, and a load while deactivated.
+    // Reset allocates nothing.
+    void reset()
+    {
+        auto prepared = [](double fastRpm, double speed, double mixValue) {
+            Effect o(48000);
+            o.at(0).param(param("Horn fast speed"), fastRpm).param(param("Leslie speed"), speed).param(param("Mix"), mixValue);
+            o.render(480, 480);
+            o.service();
+            return o.save();
+        };
+        const std::string stateA = prepared(400, 2, 0.7), stateB = prepared(350, 1, 0.5);
+        // Played from `start`: a tone, the mod wheel and the sustain pedal switching the speed.
+        auto play = [](Effect& o, uint64_t start) {
+            o.input = [start](uint64_t i, float& l, float& r) { l = r = float(0.5 * std::sin(2 * M_PI * 1760 * double(i - start) / 48000)); };
+            o.at(24000).midi(0xb0, 1, 100).at(72000).midi(0xb0, 64, 127);
+            return o.render(48000 * 2, 480);
+        };
+        for(int c = 0; c < 4; ++c)
+        {
+            Effect o(48000);
+            CHECK(o.load(stateA));
+            o.input = sine(880, 48000);
+            o.at(0).midi(0xb0, 64, 127).midi(0xb0, 1, 127); // slow (the pedal toggles), then fast
+            o.render(48000 * 2, 480);
+            o.at(0).param(param("Horn slow speed"), 30); // a new rotor, crossfading at the reset
+            o.render(480, 480);
+            o.service();
+            o.render(240, 240);
+            const std::string before = o.save();
+            const std::string& next = c == 0 ? stateA : c == 2 ? before : stateB;
+            resetAllocations();
+            o.reset();
+            CHECK(allocations() == 0 && frees() == 0);
+            if(c == 3) o.p->deactivate(o.p);
+            if(c != 2) CHECK(o.load(next));
+            if(c == 3) { CHECK(o.p->activate(o.p, 48000, 1, 4096)); o.p->start_processing(o.p); }
+            Effect fresh(48000);
+            CHECK(fresh.load(next));
+            const auto a = play(o, 48000 * 2 + 720), b = play(fresh, 0);
+            const bool same = a.left == b.left && a.right == b.right;
+            CHECK(same);
+            if(!same) std::printf("  case %d differs from a fresh effect\n", c);
+            CHECK(rms(b.left, 0, 480) > 0.05);
+        }
     }
 
     // Effect contexts: up to 16 rotors on one engine, each with its own parameters and state,
@@ -538,5 +594,5 @@ const std::map<std::string, void (*)()> leslieTests = {
     {"leslie-metadata", metadata}, {"leslie-realtime", realtime}, {"leslie-state", state}, {"leslie-rates", rates},
     {"leslie-speed", speed}, {"leslie-rebuild", rebuild}, {"leslie-tail", tail}, {"leslie-contexts", contexts},
     {"leslie-memory", memory}, {"leslie-determinism", determinism}, {"leslie-threads", threads}, {"leslie-cabinet", cabinet},
-    {"leslie-mix", mix},
+    {"leslie-mix", mix}, {"leslie-reset", reset},
 };

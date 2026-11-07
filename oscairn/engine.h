@@ -106,8 +106,9 @@ void       sbf_rotor_destroy (sbf_rotor* r);
 void sbf_rotor_speed (sbf_rotor* r, int speed);
 /* Takes over the rotors' angles and speeds of another rotor at the same rate. */
 void sbf_rotor_follow (sbf_rotor* r, const sbf_rotor* from);
-/* Empties the delay lines and filters. */
-void sbf_rotor_clear (sbf_rotor* r);
+/* Puts the rotor back as sbf_rotor_create left it, in place: rotor angles and speeds, filters,
+ * delay lines; the speed set since goes back to the configuration's, so the caller sets it again. */
+void sbf_rotor_reset (sbf_rotor* r);
 /* Mono in, stereo out; any n. */
 void sbf_rotor_process (sbf_rotor* r, const float* in, float* left, float* right, uint32_t n);
 /* The horn's current speed in revolutions per minute. */
