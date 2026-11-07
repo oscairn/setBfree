@@ -1,7 +1,7 @@
 # Oscairn's CLAP organ around setBfree's engine (doc/oscairn-plan.md).
 # cmake -S oscairn -B build && cmake --build build && ctest --test-dir build
 cmake_minimum_required(VERSION 3.21)
-project(oscairn-organ VERSION 0.4.3 LANGUAGES C CXX)
+project(oscairn-organ VERSION 0.4.4 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_EXTENSIONS ON)
