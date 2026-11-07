@@ -121,12 +121,13 @@ namespace
         return out.str();
     }
 
-    // What one engine allocates at a rate (measured on macOS with malloc_size: 2.45 MB at
-    // 44.1 kHz, 3.14 MB at 96 kHz, 4.71 MB at 176.4 kHz, 7.51 MB at 384 kHz). The tonewheel
-    // tables grow with ceil(rate / 48 kHz); the tests keep this at or above what is allocated.
+    // What one engine allocates at a rate (measured on macOS with malloc_size: 2.58 MB at
+    // 44.1 kHz, 3.28 MB at 96 kHz, 4.77 MB at 192 kHz, each with the 0.135 MB copy of its state
+    // that reset puts back). The tonewheel tables grow with ceil(rate / 48 kHz); the tests keep
+    // this at or above what is allocated.
     uint64_t engineBytes(double rate)
     {
-        return 1750000 + 750000 * uint64_t(std::ceil(rate / 48000));
+        return 1900000 + 750000 * uint64_t(std::ceil(rate / 48000));
     }
 
     // A setBfree program as a whole sound: defaults, then what the program sets.
@@ -192,6 +193,7 @@ namespace
         uint32_t fadeLeft = 0;
         Fragment cur, old;
         bool ringing = false;
+        bool reset = false; // audio: its engine goes back as built when next pinned (CLAP reset)
         uint32_t quiet = 0;
         double level = 1.0, exprGain = 1.0;
         uint8_t swell = 127;
@@ -311,13 +313,27 @@ namespace
             }
             expression.fill(127); wheel.fill(0); sustainPedal.fill(0);
         }
-        // Audio thread (reset): the main thread builds every sound's engine again and the audio
-        // thread takes it over as after a configuration change, so the instance then plays as a
-        // fresh one given its state would (the organ's wheels and rotors run free, so nothing short
-        // of a new engine sounds the same). Until then the old engine plays.
+        // Audio thread (reset): every sound's engine goes back as built, in place, so the instance
+        // plays at once as a fresh one given its state. A sound the main thread may be using (not
+        // pinned) goes back when next pinned, before any event (adoptPending).
         void renew()
         {
-            for(auto& s : slots) if(s.engine) s.wanted.fetch_add(1, std::memory_order_release);
+            for(uint32_t i = 0; i < contextCapacity; ++i)
+            {
+                slots[i].reset = true;
+                if(contexts[i].users.load(std::memory_order_acquire)) renew(i);
+            }
+        }
+        void renew(uint32_t i)
+        {
+            auto& s = slots[i];
+            s.reset = false;
+            if(!s.engine) return;
+            sbf_reset(s.engine);
+            const auto& v = contexts[i].patch.values;
+            for(uint32_t p = 0; p < paramCount; ++p)
+                if(params[p].kind == Kind::Live) sbf_control(s.engine, controlId[p], midiFor(p, v[p]));
+            sbf_control(s.engine, swellId, s.swell);
         }
 
         void wake(uint32_t slot)
@@ -350,6 +366,7 @@ namespace
             {
                 auto& s = slots[i];
                 if(contexts[i].users.load(std::memory_order_acquire) == 0) continue; // unpinned: the main thread's
+                if(s.reset) renew(i);
                 retire(s);
                 if(s.fading || retired.space() < 2 || !s.pending.load(std::memory_order_relaxed)) continue;
                 auto* next = s.pending.exchange(nullptr, std::memory_order_acquire);

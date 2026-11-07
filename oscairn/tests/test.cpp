@@ -1034,17 +1034,93 @@ namespace
     // Reset: the instance then plays as a fresh one given its state does, sample for sample (the
     // host resets an instance kept warm instead of loading its state again): every sound's
     // engine is built again, and the pedals are as at the start.
+    // Reset (Oscairn resets a used instance before giving it a state, or before playing it again with
+    // its own): at once, the instance plays as a fresh one given its state, sample for sample, with every
+    // prepared sound, one of them idle at the reset; a note in the block after it sounds at full level;
+    // the notes it ended get no NOTE_END; it allocates nothing. Cases: the same state loaded again,
+    // another state, no load, and a load while deactivated.
     void reset()
     {
-        auto play = [](Instance& o) { o.at(0).note(CLAP_EVENT_NOTE_ON, 0, 64, 20); return o.render(24000, 480); };
-        Instance fresh(48000), used(48000);
-        used.at(0).midi(0xb0, 11, 40); // the swell pedal down
-        for(int16_t k : {48, 55, 60}) used.at(0).note(CLAP_EVENT_NOTE_ON, 0, k, k);
-        used.render(24000, 480);
-        used.p->reset(used.p); // the keys still down
-        used.service();
-        const auto a = play(used), b = play(fresh);
-        CHECK(a.left == b.left && a.right == b.right && rms(b.left, 0, 24000) > 1e-3);
+        const oscairn_sound_parameter_t fast[] = {{param("Upper 1'"), 8}, {param("Leslie speed"), 2}, {param("Reverb"), 1}};
+        const oscairn_sound_parameter_t perc[] = {{param("Percussion"), 1}, {param("Vibrato upper"), 1}, {param("Overdrive"), 1}};
+        auto contexts = [](Instance& o) { return o.ext<oscairn_plugin_sound_contexts_t>(OSCAIRN_EXT_SOUND_CONTEXTS); };
+        auto id = [&](Instance& o, const char* name) {
+            oscairn_sound_context_info_t info{};
+            for(uint32_t slot = 0; slot < contexts(o)->capacity(o.p); ++slot)
+                if(contexts(o)->get(o.p, slot, &info) && !std::strcmp(info.name, name)) return info.id;
+            return uint32_t(CLAP_INVALID_ID);
+        };
+        // "fast" on channel 1, "perc" on channel 2; the given Volume on the Default.
+        auto prepared = [&](double volume) {
+            Instance o(48000);
+            auto* c = contexts(o);
+            CHECK(c->select(o.p, c->prepare(o.p, "fast", fast, 3, nullptr, nullptr, nullptr, 0), 1));
+            CHECK(c->select(o.p, c->prepare(o.p, "perc", perc, 3, nullptr, nullptr, nullptr, 0), 2));
+            o.at(0).param(param("Volume"), volume, 0);
+            o.render(480, 480);
+            o.service();
+            return o.save();
+        };
+        const std::string stateA = prepared(0), stateB = prepared(-6);
+        // A chord on each sound, the swell pedal down on channel 0; "perc" is let go and deselected, so its
+        // tail ends and it is idle at the reset; the other keys are still down.
+        auto used = [&](Instance& o) {
+            CHECK(o.load(stateA));
+            o.at(0).midi(0xb0, 11, 40);
+            for(int16_t ch = 0; ch < 3; ++ch)
+                for(int16_t k : {48, 55, 60}) o.at(0).note(CLAP_EVENT_NOTE_ON, ch, int16_t(k + ch), 100 + ch * 10 + k);
+            o.render(48000, 480);
+            for(int16_t k : {48, 55, 60}) o.at(0).note(CLAP_EVENT_NOTE_OFF, 2, int16_t(k + 2), 120 + k);
+            CHECK(contexts(o)->select(o.p, 0, 2));
+            o.render(48000 * 5, 480);
+            o.service();
+            oscairn_sound_context_info_t info{};
+            for(uint32_t slot = 0; slot < contexts(o)->capacity(o.p); ++slot)
+                if(contexts(o)->get(o.p, slot, &info) && !std::strcmp(info.name, "perc")) CHECK(info.idle);
+        };
+        // From the block after: a key on each sound, "perc" selected again, at frame 0.
+        auto play = [&](Instance& o) {
+            CHECK(contexts(o)->select(o.p, id(o, "perc"), 2));
+            for(int16_t ch = 0; ch < 3; ++ch) o.at(0).note(CLAP_EVENT_NOTE_ON, ch, int16_t(64 + ch), 200 + ch);
+            for(int16_t ch = 0; ch < 3; ++ch) o.at(24000).note(CLAP_EVENT_NOTE_OFF, ch, int16_t(64 + ch), 200 + ch);
+            return o.render(48000 * 2, 480);
+        };
+        auto ends = [](const Output& out, int32_t from, int32_t to) {
+            int n = 0;
+            for(const auto& e : out.events)
+            {
+                const auto* h = reinterpret_cast<const clap_event_header_t*>(e.data());
+                if(h->type == CLAP_EVENT_NOTE_END)
+                {
+                    const auto id = reinterpret_cast<const clap_event_note_t*>(h)->note_id;
+                    n += id >= from && id <= to;
+                }
+            }
+            return n;
+        };
+        for(int c = 0; c < 4; ++c)
+        {
+            Instance o(48000);
+            used(o);
+            const std::string before = o.save();
+            const std::string& next = c == 0 ? stateA : c == 2 ? before : stateB;
+            resetAllocations();
+            o.reset();
+            CHECK(allocations() == 0 && frees() == 0);
+            if(c == 3) o.p->deactivate(o.p);
+            if(c != 2) CHECK(o.load(next));
+            if(c == 3) { CHECK(o.p->activate(o.p, 48000, 1, 4096)); o.p->start_processing(o.p); }
+            Instance fresh(48000);
+            CHECK(fresh.load(next));
+            const auto a = play(o), b = play(fresh);
+            const bool same = a.left == b.left && a.right == b.right;
+            CHECK(same);
+            if(!same) std::printf("  case %d differs from a fresh instance\n", c);
+            CHECK(rms(b.left, 0, 480) > 1e-3);           // full level in the first block
+            CHECK(ends(a, 100, 180) == 0);                 // no NOTE_END for the keys the reset ended
+            CHECK(ends(a, 200, 202) == 3 && ends(b, 200, 202) == 3);
+            if(c == 2 && allocationGuard) CHECK(allocations() == 0 && frees() == 0);
+        }
     }
 
     // Engines the audio thread retires wait in their slots while the main thread has not freed the

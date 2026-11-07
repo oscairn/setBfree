@@ -30,6 +30,7 @@ extern void initPreamp (void* pa, void* m);
 extern void setClean (void* pa, int useClean);
 
 extern void* allocPreamp ();
+extern size_t preampSize (); /* bytes allocPreamp allocates */
 extern void freePreamp (void* pa);
 
 extern float* preamp (void* pa, float* inBuf, float* outBuf, size_t bufLengthSamples);

@@ -80,6 +80,12 @@ void sbf_panic (sbf_engine* e);
  * (the overdrive's 192 samples of history excepted). */
 void sbf_clear_tail (sbf_engine* e);
 
+/* Puts the engine back as sbf_create left it, in place and without allocating: keys up,
+ * tails, wheel and rotor positions, envelopes, filters and the key click's random numbers;
+ * live controls applied since go back to their defaults, so the caller applies them again.
+ * (With SETBFREE_LIBC_RAND libc's rand() sequence is not put back.) */
+void sbf_reset (sbf_engine* e);
+
 /* Renders the next SBF_FRAGMENT frames of stereo output. */
 void sbf_render (sbf_engine* e, float* left, float* right);
 

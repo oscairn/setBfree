@@ -1358,6 +1358,12 @@ adapterPreamp (char* funcName)
 	popIndent ();
 	codeln ("}");
 	vspace (2);
+	codeln ("size_t preampSize () {");
+	pushIndent ();
+	codeln ("return sizeof(struct b_preamp);");
+	popIndent ();
+	codeln ("}");
+	vspace (1);
 	codeln ("void freePreamp (void * pa) {");
 	pushIndent ();
 	codeln ("struct b_preamp *pp = (struct b_preamp *) pa;");

@@ -230,6 +230,13 @@ namespace organtest
         return status;
     }
 
+    void Instance::reset()
+    {
+        guarded = true;
+        p->reset(p);
+        guarded = false;
+    }
+
     Output Instance::render(uint32_t frames, uint32_t block)
     {
         Output out;

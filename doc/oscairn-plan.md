@@ -765,6 +765,9 @@ From upstream setBfree, and what is unfinished.
   held is silent up to 2.9 ms + 2.9 ms after it at 44.1 kHz (measured up to 5.3 ms).
 - While a sound is silent it is not rendered, so a Leslie speed change made in silence ramps
   when the next note starts.
-- After a reset the old engines play until the main thread has built new ones (44 ms each at
-  48 kHz), which take over crossfaded if a key was pressed meanwhile; a reset instance then plays
-  as a fresh one given its state.
+- A reset puts every sound's engine back as built, in place (`sbf_reset`, from a copy of its state
+  taken when it was built, 0.135 MB more per sound), so the instance plays at once as a fresh one
+  given its state. A sound whose configuration was changed just before the reset, and whose new
+  engine the main thread has not built yet, plays its reset old engine until the new one takes over
+  (crossfaded if the sound is sounding then); and with `SETBFREE_LIBC_RAND` (the stock gate's build) libc's `rand()` is not put
+  back.

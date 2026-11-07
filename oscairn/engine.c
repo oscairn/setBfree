@@ -26,6 +26,7 @@
 #endif
 
 #include <locale.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,10 +60,32 @@ mainDoc ()
 double SampleRateD = 48000.0;
 #endif
 
+#ifndef SETBFREE_STOCK
+/* A Leslie's rotors, filters and positions as created; its displacement tables never change
+ * and its delay lines start empty. */
+struct whirl_fresh {
+	unsigned char rotors[offsetof (struct b_whirl, HLbuf) - offsetof (struct b_whirl, adx0)];
+	unsigned char tail[sizeof (struct b_whirl) - offsetof (struct b_whirl, outpos)];
+};
+#endif
+
+#ifndef SETBFREE_STOCK
+static void keepWhirl (struct whirl_fresh* f, const struct b_whirl* w);
+static void restoreWhirl (struct b_whirl* w, const struct whirl_fresh* f);
+#endif
+
 struct sbf_engine {
 	struct b_instance inst;
 	float             a[SBF_FRAGMENT], b[SBF_FRAGMENT], c[SBF_FRAGMENT];
 	float             drumL[SBF_FRAGMENT], drumR[SBF_FRAGMENT];
+#ifndef SETBFREE_STOCK
+	/* The state as created, which sbf_reset puts back: the tone generator (with the
+	 * scanner), the preamp, the reverb and the Leslie. */
+	struct b_tonegen*  freshTonegen;
+	void*              freshPreamp;
+	struct b_reverb    freshReverb;
+	struct whirl_fresh freshWhirl;
+#endif
 };
 
 static void
@@ -174,6 +197,18 @@ sbf_create_like (double rate, const char* config, const sbf_engine* like)
 		uselocale (old);
 		freelocale (c);
 	}
+#ifndef SETBFREE_STOCK
+	e->freshTonegen = (struct b_tonegen*)malloc (sizeof (struct b_tonegen));
+	e->freshPreamp  = malloc (preampSize ());
+	if (!e->freshTonegen || !e->freshPreamp) {
+		sbf_destroy (e);
+		return NULL;
+	}
+	memcpy (e->freshTonegen, inst->synth, sizeof (struct b_tonegen));
+	memcpy (e->freshPreamp, inst->preamp, preampSize ());
+	e->freshReverb = *inst->reverb;
+	keepWhirl (&e->freshWhirl, inst->whirl);
+#endif
 	return e;
 }
 
@@ -183,6 +218,10 @@ sbf_destroy (sbf_engine* e)
 	if (!e)
 		return;
 	freeInstance (&e->inst);
+#ifndef SETBFREE_STOCK
+	free (e->freshTonegen);
+	free (e->freshPreamp);
+#endif
 	free (e);
 }
 
@@ -350,6 +389,33 @@ sbf_clear_tail (sbf_engine* e)
 		memset (r->delays[i], 0, (size_t)(r->endp[i] - r->delays[i] + 1) * sizeof (float));
 	r->yy1 = r->y_1 = 0;
 	clearWhirl (e->inst.whirl);
+}
+
+static void
+keepWhirl (struct whirl_fresh* f, const struct b_whirl* w)
+{
+	memcpy (f->rotors, &w->adx0, sizeof (f->rotors));
+	memcpy (f->tail, &w->outpos, sizeof (f->tail));
+}
+
+static void
+restoreWhirl (struct b_whirl* w, const struct whirl_fresh* f)
+{
+	clearWhirl (w);
+	memcpy (&w->adx0, f->rotors, sizeof (f->rotors));
+	memcpy (&w->outpos, f->tail, sizeof (f->tail));
+}
+
+void
+sbf_reset (sbf_engine* e)
+{
+	struct b_instance* inst = &e->inst;
+	memcpy (inst->synth, e->freshTonegen, sizeof (struct b_tonegen));
+	memcpy (inst->preamp, e->freshPreamp, preampSize ());
+	*inst->reverb = e->freshReverb;
+	for (int i = 0; i < RV_NZ; ++i)
+		memset (inst->reverb->delays[i], 0, (size_t)(inst->reverb->endp[i] - inst->reverb->delays[i] + 1) * sizeof (float));
+	restoreWhirl (inst->whirl, &e->freshWhirl);
 }
 
 /* the rotor needs whirlRamp, which upstream does not have */

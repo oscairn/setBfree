@@ -412,6 +412,10 @@ void * allocPreamp () {
 }
 
 
+size_t preampSize () {
+  return sizeof(struct b_preamp);
+}
+
 void freePreamp (void * pa) {
   struct b_preamp *pp = (struct b_preamp *) pa;
   free(pp);

@@ -96,6 +96,7 @@ namespace organtest
         clap_process_status process(uint32_t frames, Output* out = nullptr);
         Output render(uint32_t frames, uint32_t block);
         void service() { p->on_main_thread(p); }
+        void reset(); // CLAP reset, counted by the allocation guard as process() is
         std::string save() const;
         bool load(const std::string& data);
 
