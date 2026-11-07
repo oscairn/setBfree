@@ -716,6 +716,32 @@ org.oscairn.setbfree synth --param 3=2` and `... org.oscairn.setbfree.leslie eff
 PASSED in the engine and with `OSCAIRN_PLUGIN_WORKER`; the organ's reopened render differs by rms
 0.00014 (the Leslie has turned; informational), the Leslie's by 0.
 
+### Session 7 (2026-11-06): reset at once
+
+Oscairn now resets a used instance and plays it again, or loads a state into it, and it must sound
+at once as a fresh instance given that state (`docs/plugin-porting.md`, "Expect a second life").
+
+**Fixed** (each with a test that failed before it):
+
+- `116440c`: the organ's reset asked the main thread for new engines and played the old ones until
+  they came. `sbf_reset` (engine.c) puts an engine back as built, in place and without allocating,
+  from a copy of its state taken when it was built (0.135 MB per sound, so `engineBytes` grows by
+  0.15 MB); the organ then applies the live controls and the swell again. A sound the main thread may
+  be using is reset when next pinned, before any event. The preamp's size comes from a new
+  `preampSize()` in overdrive.c and overmaker.c. `reset` now compares the next two seconds with a
+  fresh instance, sample for sample, on three sounds (one idle at the reset), for the same state
+  again, another state, no load and a load while deactivated; a note in the first block at full
+  level, no NOTE_END for the keys the reset ended, no allocation in reset.
+- `7ed0bf6`: the Leslie's reset kept its rotors' angles and speeds, the pedals and a rebuild in
+  progress. `sbf_rotor_reset` puts a rotor back as built; a state load builds the new rotor at once;
+  before the first block after activation or a reset a new rotor takes over whole and Mix starts
+  where it is set (section 6). `leslie-reset` compares with a fresh effect in the same four cases;
+  `leslie-rebuild` also requires a rebuild while playing to start from the old rotor's sample.
+- `370ebe9`: setBfree 0.4.4, setBfree Leslie 0.2.1.
+
+**Gates on each committed tree** (worktrees, macOS arm64): release tests (38, 39, 39), ASan and
+UBSan, TSan, the stock gate 6 of 6 identical; all passed.
+
 ## 11. Known differences
 
 From upstream setBfree, and what is unfinished.
