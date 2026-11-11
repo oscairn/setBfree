@@ -71,4 +71,12 @@ if(OSCAIRN_ORGAN_TESTS)
     foreach(test metadata realtime state rates speed rebuild tail contexts memory determinism threads cabinet mix reset)
         add_test(NAME leslie-${test} COMMAND oscairn-organ-tests leslie-${test})
     endforeach()
+    # Opens each plugin as Oscairn does with a temporary HOME (tests/privacy-check.sh): nothing may
+    # touch the user's Documents, Desktop or Downloads, or create anything under HOME.
+    add_executable(privacy-host tests/privacy-host.cpp)
+    target_link_libraries(privacy-host PRIVATE oscairn_organ_headers ${CMAKE_DL_LIBS})
+    foreach(id org.oscairn.setbfree org.oscairn.setbfree.leslie)
+        add_test(NAME privacy-${id} COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/privacy-check.sh
+            $<TARGET_FILE:privacy-host> $<TARGET_FILE:oscairn_organ> ${id})
+    endforeach()
 endif()
