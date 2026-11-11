@@ -28,20 +28,21 @@ namespace fs = std::filesystem;
 
 // oscairn.assets drafts 1-3 (oscairn-clap's include/oscairn-clap/assets.h), declared here so the
 // host builds against whichever copy of the SDK headers a repository vendors, or none.
-struct oscairn_asset_ref_t
+// The same struct names as the SDK's: UBSan's function check compares the types by name.
+typedef struct oscairn_asset_ref
 {
     char library[64];
     char path[1024];
     char sha256[65];
-};
-struct oscairn_host_assets_t
+} oscairn_asset_ref_t;
+typedef struct oscairn_host_assets
 {
     bool(CLAP_ABI *resolve)(const clap_host_t *, oscairn_asset_ref_t *, char *, uint32_t, char *,
                             uint32_t);
     bool(CLAP_ABI *library_root)(const void *, const char *, const char *, char *, uint32_t);
     bool(CLAP_ABI *create)(const clap_host_t *, const char *, oscairn_asset_ref_t *, char *,
                            uint32_t);
-};
+} oscairn_host_assets_t;
 static const char OSCAIRN_EXT_ASSETS[] = "oscairn.assets/draft-3";
 static const char OSCAIRN_EXT_ASSETS_DRAFT_2[] = "oscairn.assets/draft-2";
 static const char OSCAIRN_EXT_ASSETS_DRAFT_1[] = "oscairn.assets/draft-1";
