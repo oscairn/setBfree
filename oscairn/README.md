@@ -16,6 +16,25 @@ oscairn/tools/compare-stock.sh build/gate   # the stock-vs-fork gate
 "setBfree Leslie" (`org.oscairn.setbfree.leslie`), its rotary speaker as an audio effect with
 Oscairn's native effect contexts.
 
+## Releasing
+
+The package version is the CMake project version in `oscairn/CMakeLists.txt`; each plugin's own
+version lives in its descriptor (`oscairn/plugin.cpp`, `oscairn/leslie.cpp`; the release scripts
+read them there). Bump what changed, commit, then tag the package version and push the tag:
+
+```
+git tag oscairn-v0.4.5
+git push origin oscairn-v0.4.5
+```
+
+The [release workflow](../.github/workflows/release.yml) builds the `.clap` for each platform,
+runs the tests and the device dependency checks, and creates a GitHub Release holding
+`oscairn-setbfree-<platform>.clap`, `licenses.tar.gz` and `oscairn-release.json`. The tag version
+must match the CMake project version; the release fails if it does not. To try the workflow
+without a tag, run it manually (`workflow_dispatch`) with *dry run* checked: everything runs and
+the files land as a workflow artifact instead of a release. The repo-specific facts (names, ids,
+plugins, licence) live in `oscairn/tools/release/release.conf`.
+
 ## Credits and licence
 
 setBfree is by Fredrik Kilander, Will Panther, Robin Gareus and Ken Restivo (see `AUTHORS`),

@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'oscairn-v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build, check and self-check without creating a release; upload the files as a workflow artifact'
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # A new platform = one entry here (its name from the manifest schema's accepted
+        # set, plus the runner that can build it); nothing else in this file changes.
+        include:
+          - name: macos-arm64
+            os: macos-15
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          set -euo pipefail
+          oscairn/tools/release/build.sh '${{ matrix.name }}' dist
+      - name: Test
+        run: |
+          set -euo pipefail
+          ctest --test-dir "dist/build-${{ matrix.name }}" --output-on-failure
+      - name: Dependency check
+        run: |
+          set -euo pipefail
+          . oscairn/tools/release/release.conf
+          python3 oscairn/tools/release/check_deps.py "dist/$NAME-${{ matrix.name }}.clap" '${{ matrix.name }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clap-${{ matrix.name }}
+          path: dist/*.clap
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # gh release create
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            # A dry run has no tag: use the version the package itself declares.
+            echo "tag=oscairn-v$(python3 oscairn/tools/release/version.py)" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: clap-*
+          merge-multiple: true
+          path: dist
+      - name: Licences
+        run: |
+          set -euo pipefail
+          oscairn/tools/release/licenses.sh dist
+      - name: Manifest
+        run: |
+          set -euo pipefail
+          python3 oscairn/tools/release/manifest.py "$TAG" dist
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+      - name: Self-check
+        run: |
+          set -euo pipefail
+          python3 oscairn/tools/release/selfcheck.py dist
+      - name: Create release
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+        run: |
+          set -euo pipefail
+          . oscairn/tools/release/release.conf
+          # gh refuses to create a release for a tag that already has one; that is the
+          # "already exists" failure. --verify-tag keeps the release on this commit.
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes "Install from the Catalog in Oscairn (official repository), or download the signed package: https://github.com/oscairn/packages/raw/main/packages/$PACKAGE_ID/${TAG#*-v}.olib (available once this version is imported)." \
+            dist/*.clap dist/licenses.tar.gz dist/oscairn-release.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        with:
+          name: release-files
+          path: |
+            dist/*.clap
+            dist/licenses.tar.gz
+            dist/oscairn-release.json
