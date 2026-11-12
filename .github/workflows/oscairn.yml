@@ -23,11 +23,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Linux x86_64, os: ubuntu-24.04, type: Release, flags: "", guard: ON, gate: true }
-          - { name: Linux ARM64, os: ubuntu-24.04-arm, type: Release, flags: "", guard: ON, gate: true }
-          - { name: macOS arm64, os: macos-15, type: Release, flags: "", guard: ON, gate: true }
-          - { name: Linux ASan UBSan, os: ubuntu-24.04, type: RelWithDebInfo, flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer", guard: OFF, gate: false }
-          - { name: Linux TSan, os: ubuntu-24.04, type: RelWithDebInfo, flags: "-fsanitize=thread", guard: OFF, gate: false }
+          - { name: Linux x86_64, os: ubuntu-24.04, compiler: gcc, sanitizer: none, type: Release, flags: "", guard: ON, gate: true }
+          - { name: Linux ARM64, os: ubuntu-24.04-arm, compiler: gcc, sanitizer: none, type: Release, flags: "", guard: ON, gate: true }
+          - { name: macOS arm64, os: macos-15, compiler: appleclang, sanitizer: none, type: Release, flags: "", guard: ON, gate: true }
+          - { name: Linux ASan UBSan, os: ubuntu-24.04, compiler: gcc, sanitizer: asan-ubsan, type: RelWithDebInfo, flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer", guard: OFF, gate: false }
+          - { name: Linux TSan, os: ubuntu-24.04, compiler: gcc, sanitizer: tsan, type: RelWithDebInfo, flags: "-fsanitize=thread", guard: OFF, gate: false }
+    env:
+      # ccache for every cmake build in the job, the stock gate's included
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,6 +39,11 @@ jobs:
       - name: Install Ninja
         run: |
           if [[ "$RUNNER_OS" == "Linux" ]]; then sudo apt-get update && sudo apt-get install -y ninja-build; else brew install ninja; fi
+      - uses: hendrikmuhs/ccache-action@v1.2.24
+        with:
+          key: organ-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.type }}-${{ matrix.sanitizer }}
+          max-size: 300M
+          evict-old-files: job
       - name: Configure
         run: |
           cmake -S oscairn -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DORGAN_ALLOC_GUARD=${{ matrix.guard }} \
@@ -63,4 +72,9 @@ jobs:
         with:
           fetch-depth: 0
       - run: sudo apt-get update && sudo apt-get install -y libjack-jackd2-dev lv2-dev libftgl-dev libglu1-mesa-dev ttf-bitstream-vera
-      - run: make -j4
+      - uses: hendrikmuhs/ccache-action@v1.2.24
+        with:
+          key: organ-upstream-make-ubuntu-24.04-gcc
+          max-size: 300M
+          evict-old-files: job
+      - run: make -j4 CC="ccache cc" CXX="ccache c++"
